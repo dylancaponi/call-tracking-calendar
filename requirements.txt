@@ -6,6 +6,9 @@ google-auth>=2.23.0
 # Secure credential storage
 keyring>=24.0.0
 
+# macOS Contacts access (optional, for contact name lookup)
+pyobjc-framework-Contacts>=10.0
+
 # Development dependencies
 pyinstaller>=6.0.0
 pytest>=7.4.0

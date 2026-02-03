@@ -18,6 +18,7 @@ from googleapiclient.errors import HttpError
 from googleapiclient.http import BatchHttpRequest
 
 from .call_database import CallRecord
+from .contacts import get_contact_name, preload_contacts
 
 # Maximum events per batch request (Google's limit is 50)
 BATCH_SIZE = 50
@@ -233,43 +234,8 @@ class GoogleCalendar:
         calendar_id = self.get_or_create_calendar()
         service = self._get_service()
 
-        # Build event summary
-        summary = f"Call with {call.display_name}"
-
-        # Calculate end time
-        duration = max(call.duration_seconds, 60)  # Minimum 1 minute for visibility
-        end_time = call.timestamp + timedelta(seconds=duration)
-
-        # Build description
-        description_parts = [
-            f"Direction: {call.direction}",
-            f"Duration: {call.duration_formatted}",
-            f"Answered: {'Yes' if call.is_answered else 'No'}",
-        ]
-        if call.phone_number:
-            description_parts.append(f"Number: {call.phone_number}")
-
-        description = "\n".join(description_parts)
-
-        # Create event
-        event: Dict[str, Any] = {
-            "summary": summary,
-            "description": description,
-            "start": {
-                "dateTime": call.timestamp.isoformat(),
-                "timeZone": "UTC",
-            },
-            "end": {
-                "dateTime": end_time.isoformat(),
-                "timeZone": "UTC",
-            },
-            # Store call unique ID in extended properties for reference
-            "extendedProperties": {
-                "private": {
-                    "callUniqueId": call.unique_id,
-                }
-            },
-        }
+        # Build event body (includes contact name lookup)
+        event = self._build_event_body(call)
 
         try:
             created = (
@@ -283,16 +249,26 @@ class GoogleCalendar:
             logger.error(f"Failed to create event: {e}")
             raise GoogleCalendarError(f"Failed to create event: {e}") from e
 
-    def _build_event_body(self, call: CallRecord) -> Dict[str, Any]:
+    def _build_event_body(
+        self, call: CallRecord, contact_name: Optional[str] = None
+    ) -> Dict[str, Any]:
         """Build a calendar event body from a call record.
 
         Args:
             call: The call record.
+            contact_name: Optional pre-fetched contact name.
 
         Returns:
             Dictionary representing the event body.
         """
-        summary = f"Call with {call.display_name}"
+        # Use contact name if provided, otherwise try to look it up
+        if contact_name is None:
+            contact_name = get_contact_name(call.phone_number)
+
+        # Use contact name if available, otherwise fall back to call's display_name
+        display_name = contact_name or call.display_name
+        summary = f"Call with {display_name}"
+
         duration = max(call.duration_seconds, 60)
         end_time = call.timestamp + timedelta(seconds=duration)
 
@@ -301,6 +277,7 @@ class GoogleCalendar:
             f"Duration: {call.duration_formatted}",
             f"Answered: {'Yes' if call.is_answered else 'No'}",
         ]
+        # Always include phone number in description
         if call.phone_number:
             description_parts.append(f"Number: {call.phone_number}")
 
@@ -344,6 +321,11 @@ class GoogleCalendar:
         results: List[Tuple[str, Optional[str], Optional[str]]] = []
         total = len(calls)
 
+        # Preload contact names for all calls
+        phone_numbers = [call.phone_number for call in calls if call.phone_number]
+        contact_names = preload_contacts(phone_numbers)
+        logger.info(f"Preloaded {sum(1 for v in contact_names.values() if v)} contact names")
+
         # Process in batches
         for batch_start in range(0, total, BATCH_SIZE):
             batch_calls = calls[batch_start:batch_start + BATCH_SIZE]
@@ -361,7 +343,8 @@ class GoogleCalendar:
             batch = service.new_batch_http_request()
 
             for call in batch_calls:
-                event_body = self._build_event_body(call)
+                contact_name = contact_names.get(call.phone_number)
+                event_body = self._build_event_body(call, contact_name)
                 batch.add(
                     service.events().insert(calendarId=calendar_id, body=event_body),
                     callback=make_callback(call.unique_id),

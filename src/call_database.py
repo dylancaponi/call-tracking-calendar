@@ -148,7 +148,9 @@ class CallDatabase:
             params.append(min_apple_timestamp)
 
         if answered_only:
-            query += " AND ZANSWERED = 1"
+            # For incoming calls, ZANSWERED=1 means answered
+            # For outgoing calls, ZANSWERED=0 but ZDURATION>0 means completed
+            query += " AND (ZANSWERED = 1 OR (ZORIGINATED = 1 AND ZDURATION > 0))"
 
         query += " ORDER BY ZDATE ASC"
 
