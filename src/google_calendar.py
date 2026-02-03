@@ -280,7 +280,20 @@ class GoogleCalendar:
 
         # Use contact name if available, otherwise fall back to call's display_name
         display_name = contact_name or call.display_name
-        summary = f"Call with {display_name}"
+
+        # Format duration as [M:SS] or [H:MM:SS]
+        dur_secs = call.duration_seconds
+        if dur_secs >= 3600:
+            hours = dur_secs // 3600
+            mins = (dur_secs % 3600) // 60
+            secs = dur_secs % 60
+            duration_str = f"{hours}:{mins:02d}:{secs:02d}"
+        else:
+            mins = dur_secs // 60
+            secs = dur_secs % 60
+            duration_str = f"{mins}:{secs:02d}"
+
+        summary = f"Call with {display_name} [{duration_str}]"
 
         duration = max(call.duration_seconds, 60)
         end_time = call.timestamp + timedelta(seconds=duration)

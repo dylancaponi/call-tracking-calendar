@@ -102,7 +102,7 @@ class TestCallRecordToEvent:
         call_args = mock_calendar._service.events().insert.call_args
         event_body = call_args.kwargs.get("body") or call_args[1].get("body")
 
-        assert event_body["summary"] == "Call with John Doe"
+        assert event_body["summary"] == "Call with John Doe [5:00]"
 
     def test_create_event_from_call_times(self, mock_calendar, sample_call):
         """Test that event times are set correctly."""
@@ -166,7 +166,7 @@ class TestCallRecordToEvent:
         call_args = mock_calendar._service.events().insert.call_args
         event_body = call_args.kwargs.get("body") or call_args[1].get("body")
 
-        assert event_body["summary"] == "Call with +15559876543"
+        assert event_body["summary"] == "Call with +15559876543 [2:00]"
 
     def test_create_event_minimum_duration(self, mock_calendar):
         """Test that short calls have minimum 1 minute duration for visibility."""
