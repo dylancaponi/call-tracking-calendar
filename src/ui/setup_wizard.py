@@ -7,6 +7,12 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 from typing import Callable, List, Optional, Tuple
 
+from ..contacts import (
+    get_contacts_authorization_status,
+    is_contacts_authorized,
+    open_contacts_settings,
+    request_contacts_access,
+)
 from ..google_calendar import GoogleCalendar, AuthenticationError
 from ..launchagent import install as install_launchagent, is_installed
 from ..permissions import (
@@ -33,6 +39,7 @@ class SetupWizard:
             ("Welcome", self._create_welcome_step),
             ("Permissions", self._create_permissions_step),
             ("Google Account", self._create_google_step),
+            ("Contacts", self._create_contacts_step),
             ("Background Sync", self._create_launchagent_step),
             ("Complete", self._create_complete_step),
         ]
@@ -249,7 +256,7 @@ Click "Next" to begin setup.
         next_btn = ttk.Button(
             btn_frame,
             text="Next →",
-            command=lambda: self._show_step(3),
+            command=lambda: self._show_step(3),  # Go to Contacts step
             state=tk.NORMAL if is_authenticated else tk.DISABLED,
         )
         next_btn.pack(side=tk.RIGHT)
@@ -271,6 +278,103 @@ Click "Next" to begin setup.
         """Disconnect Google account."""
         self.google_calendar.logout()
         self._show_step(2)  # Refresh the step
+
+    def _create_contacts_step(self, parent: ttk.Frame) -> None:
+        """Create the contacts permission step."""
+        ttk.Label(
+            parent,
+            text="Contacts Access (Optional)",
+            font=("Helvetica", 18, "bold"),
+        ).pack(pady=(20, 10))
+
+        status = get_contacts_authorization_status()
+        is_authorized = status == 'authorized'
+
+        if is_authorized:
+            status_text = "✓ Contacts access is granted"
+            status_color = "green"
+        elif status == 'denied':
+            status_text = "✗ Contacts access was denied"
+            status_color = "red"
+        else:
+            status_text = "○ Contacts access not yet requested"
+            status_color = "gray"
+
+        status_label = ttk.Label(parent, text=status_text, foreground=status_color)
+        status_label.pack(pady=10)
+
+        ttk.Label(
+            parent,
+            text=(
+                "Granting Contacts access allows the app to show contact names\n"
+                "instead of phone numbers in your calendar events.\n\n"
+                "For example: 'Call with John Smith' instead of 'Call with +1-555-123-4567'\n\n"
+                "This is optional - the app works fine without it."
+            ),
+            justify=tk.CENTER,
+        ).pack(pady=20)
+
+        if not is_authorized:
+            if status == 'denied':
+                ttk.Label(
+                    parent,
+                    text="To enable, open System Settings and add this app to Contacts.",
+                    foreground="gray",
+                ).pack(pady=5)
+                ttk.Button(
+                    parent,
+                    text="Open System Settings",
+                    command=open_contacts_settings,
+                ).pack(pady=5)
+                ttk.Button(
+                    parent,
+                    text="Check Again",
+                    command=lambda: self._show_step(3),
+                ).pack(pady=5)
+            else:
+                ttk.Button(
+                    parent,
+                    text="Enable Contacts Access",
+                    command=self._request_contacts,
+                ).pack(pady=10)
+        else:
+            ttk.Label(
+                parent,
+                text="Calendar events will show contact names when available.",
+                foreground="gray",
+            ).pack(pady=10)
+
+        # Navigation buttons
+        btn_frame = ttk.Frame(parent)
+        btn_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=20)
+
+        ttk.Button(btn_frame, text="← Back", command=lambda: self._show_step(2)).pack(
+            side=tk.LEFT
+        )
+        # Can always proceed - this step is optional
+        ttk.Button(
+            btn_frame,
+            text="Skip" if not is_authorized else "Next →",
+            command=lambda: self._show_step(4),
+        ).pack(side=tk.RIGHT)
+
+    def _request_contacts(self) -> None:
+        """Request contacts access."""
+        if request_contacts_access():
+            messagebox.showinfo("Success", "Contacts access granted!")
+        else:
+            status = get_contacts_authorization_status()
+            if status == 'denied':
+                messagebox.showinfo(
+                    "Access Denied",
+                    "Contacts access was denied. You can enable it later in System Settings."
+                )
+            else:
+                messagebox.showinfo(
+                    "Access Not Granted",
+                    "Contacts access was not granted. You can enable it later in System Settings."
+                )
+        self._show_step(3)  # Refresh the step
 
     def _create_launchagent_step(self, parent: ttk.Frame) -> None:
         """Create the LaunchAgent step."""
@@ -316,10 +420,10 @@ Click "Next" to begin setup.
         btn_frame = ttk.Frame(parent)
         btn_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=20)
 
-        ttk.Button(btn_frame, text="← Back", command=lambda: self._show_step(2)).pack(
+        ttk.Button(btn_frame, text="← Back", command=lambda: self._show_step(3)).pack(
             side=tk.LEFT
         )
-        ttk.Button(btn_frame, text="Next →", command=lambda: self._show_step(4)).pack(
+        ttk.Button(btn_frame, text="Next →", command=lambda: self._show_step(5)).pack(
             side=tk.RIGHT
         )
 
@@ -328,7 +432,7 @@ Click "Next" to begin setup.
         try:
             if install_launchagent():
                 messagebox.showinfo("Success", "Background sync has been enabled!")
-                self._show_step(3)  # Refresh the step
+                self._show_step(4)  # Refresh the step
             else:
                 messagebox.showerror("Error", "Failed to enable background sync.")
         except Exception as e:
@@ -363,7 +467,7 @@ Click "Next" to begin setup.
         btn_frame = ttk.Frame(parent)
         btn_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=20)
 
-        ttk.Button(btn_frame, text="← Back", command=lambda: self._show_step(3)).pack(
+        ttk.Button(btn_frame, text="← Back", command=lambda: self._show_step(4)).pack(
             side=tk.LEFT
         )
         ttk.Button(btn_frame, text="Finish", command=self._finish).pack(side=tk.RIGHT)

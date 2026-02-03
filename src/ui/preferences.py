@@ -6,6 +6,12 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 from typing import Callable, Optional
 
+from ..contacts import (
+    get_contacts_authorization_status,
+    is_contacts_authorized,
+    open_contacts_settings,
+    request_contacts_access,
+)
 from ..google_calendar import GoogleCalendar
 from ..launchagent import (
     get_logs,
@@ -99,6 +105,22 @@ class PreferencesWindow:
                 perm_frame, text="Grant", command=open_full_disk_access_settings
             ).pack(side=tk.RIGHT)
 
+        # Contacts status
+        contacts_frame = ttk.LabelFrame(parent, text="Contacts (Optional)", padding="10")
+        contacts_frame.pack(fill=tk.X, pady=5)
+
+        has_contacts = is_contacts_authorized()
+        contacts_text = "✓ Granted" if has_contacts else "○ Not Granted"
+        contacts_color = "green" if has_contacts else "gray"
+        ttk.Label(contacts_frame, text="Contacts Access:").pack(side=tk.LEFT)
+        ttk.Label(contacts_frame, text=contacts_text, foreground=contacts_color).pack(
+            side=tk.LEFT, padx=10
+        )
+        if not has_contacts:
+            ttk.Button(
+                contacts_frame, text="Enable", command=self._enable_contacts
+            ).pack(side=tk.RIGHT)
+
         # Google status
         google_frame = ttk.LabelFrame(parent, text="Google Calendar", padding="10")
         google_frame.pack(fill=tk.X, pady=5)
@@ -190,6 +212,25 @@ class PreferencesWindow:
             ttk.Label(agent_frame, text="Background sync is disabled").pack(anchor=tk.W)
             ttk.Button(
                 agent_frame, text="Enable", command=self._enable_background_sync
+            ).pack(anchor=tk.W, pady=5)
+
+        # Contacts access
+        contacts_frame = ttk.LabelFrame(parent, text="Contacts Access", padding="10")
+        contacts_frame.pack(fill=tk.X, pady=5)
+
+        has_contacts = is_contacts_authorized()
+        if has_contacts:
+            ttk.Label(
+                contacts_frame,
+                text="Contacts access is enabled.\nCalendar events will show contact names.",
+            ).pack(anchor=tk.W)
+        else:
+            ttk.Label(
+                contacts_frame,
+                text="Enable to show contact names instead of phone numbers.",
+            ).pack(anchor=tk.W)
+            ttk.Button(
+                contacts_frame, text="Enable Contacts Access", command=self._enable_contacts
             ).pack(anchor=tk.W, pady=5)
 
         # Data management
@@ -313,6 +354,38 @@ class PreferencesWindow:
                 self._refresh_status()
             else:
                 messagebox.showerror("Error", "Failed to disable background sync.")
+
+    def _enable_contacts(self) -> None:
+        """Enable contacts access."""
+        status = get_contacts_authorization_status()
+
+        if status == 'authorized':
+            messagebox.showinfo("Already Enabled", "Contacts access is already enabled.")
+            return
+
+        if status == 'denied':
+            # Must go to System Settings
+            messagebox.showinfo(
+                "Open Settings",
+                "Contacts access was previously denied.\n"
+                "Please enable it in System Settings.",
+            )
+            open_contacts_settings()
+        else:
+            # Try to request access
+            if request_contacts_access():
+                messagebox.showinfo("Success", "Contacts access has been enabled!")
+                self._refresh_status()
+            else:
+                # Request didn't work, open settings
+                new_status = get_contacts_authorization_status()
+                if new_status == 'denied':
+                    messagebox.showinfo(
+                        "Access Denied",
+                        "Contacts access was denied.\n"
+                        "You can enable it in System Settings.",
+                    )
+                    open_contacts_settings()
 
     def _clear_sync_history(self) -> None:
         """Clear sync history."""

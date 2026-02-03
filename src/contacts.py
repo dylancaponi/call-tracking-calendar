@@ -162,27 +162,82 @@ def is_contacts_authorized() -> bool:
 
 
 def request_contacts_access() -> bool:
-    """Request access to Contacts. Returns True if granted."""
+    """Request access to Contacts. Returns True if granted.
+
+    Note: This triggers the system permission dialog if status is NotDetermined.
+    If previously denied, the user must grant access via System Settings.
+    """
     try:
         import Contacts
+        import time
 
         store = Contacts.CNContactStore.alloc().init()
 
-        # This will prompt the user if not yet determined
-        granted = [False]
+        # Check current status
+        status = Contacts.CNContactStore.authorizationStatusForEntityType_(
+            Contacts.CNEntityTypeContacts
+        )
+
+        # 0=NotDetermined - we can request
+        # 2=Denied - user must go to Settings
+        # 3=Authorized - already have access
+        if status == 3:
+            return True
+        if status == 2:
+            return False  # Must use Settings
+
+        # Status is NotDetermined, request access
+        result = [None]
 
         def handler(success, error):
-            granted[0] = success
+            result[0] = success
 
         store.requestAccessForEntityType_completionHandler_(
             Contacts.CNEntityTypeContacts, handler
         )
 
-        # Note: This is async, so we need to wait or handle differently
-        # For now, just return current status
+        # Wait briefly for the dialog (up to 30 seconds)
+        for _ in range(300):
+            if result[0] is not None:
+                return result[0]
+            time.sleep(0.1)
+
         return is_contacts_authorized()
 
     except ImportError:
         return False
     except Exception:
         return False
+
+
+def get_contacts_authorization_status() -> str:
+    """Get the current Contacts authorization status.
+
+    Returns:
+        One of: 'not_determined', 'restricted', 'denied', 'authorized', 'unknown'
+    """
+    try:
+        import Contacts
+
+        status = Contacts.CNContactStore.authorizationStatusForEntityType_(
+            Contacts.CNEntityTypeContacts
+        )
+        return {
+            0: 'not_determined',
+            1: 'restricted',
+            2: 'denied',
+            3: 'authorized',
+        }.get(status, 'unknown')
+    except ImportError:
+        return 'unknown'
+    except Exception:
+        return 'unknown'
+
+
+def open_contacts_settings() -> None:
+    """Open System Settings to the Contacts privacy pane."""
+    import subprocess
+    subprocess.run([
+        'open',
+        'x-apple.systempreferences:com.apple.preference.security?Privacy_Contacts'
+    ])

@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleDisplayName</key>
+    <string>Call Tracking Calendar</string>
+    <key>CFBundleExecutable</key>
+    <string>CallTrackingCalendar</string>
+    <key>CFBundleIconFile</key>
+    <string>icon.icns</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.calltracking.calendar</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>Call Tracking Calendar</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>10.15</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSHumanReadableCopyright</key>
+    <string>Copyright © 2024. All rights reserved.</string>
+
+    <!-- Privacy Usage Descriptions -->
+    <key>NSContactsUsageDescription</key>
+    <string>Call Tracking Calendar needs access to your Contacts to show contact names in calendar events instead of phone numbers.</string>
+
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Call Tracking Calendar needs to open your web browser for Google authentication.</string>
+</dict>
+</plist>
