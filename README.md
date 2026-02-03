@@ -31,7 +31,7 @@ A macOS application that syncs your call history to Google Calendar. Each comple
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/call-tracking-calendar.git
+git clone https://github.com/dylancaponi/call-tracking-calendar.git
 cd call-tracking-calendar
 
 # Create virtual environment
@@ -45,15 +45,72 @@ pip install -r requirements.txt
 python -m src.main
 ```
 
-## Google Cloud Setup
+## Google Cloud Setup (For Developers/Self-Hosting)
 
-Before the app can sync to Google Calendar, you need to set up OAuth credentials:
+To distribute this app or run it yourself, you need to create OAuth credentials:
+
+### Step 1: Create a Google Cloud Project
 
 1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-2. Create a new project or select an existing one
-3. Enable the Google Calendar API
-4. Create OAuth 2.0 credentials (Desktop application)
-5. Download `credentials.json` and place it in `resources/`
+2. Click the project dropdown (top left) → **New Project**
+3. Name it "Call Tracking Calendar" → **Create**
+4. Make sure your new project is selected
+
+### Step 2: Enable the Google Calendar API
+
+1. Go to **APIs & Services** → **Library**
+2. Search for "Google Calendar API"
+3. Click on it → **Enable**
+
+### Step 3: Configure OAuth Consent Screen
+
+1. Go to **APIs & Services** → **OAuth consent screen**
+2. Select **External** → **Create**
+3. Fill in:
+   - App name: `Call Tracking Calendar`
+   - User support email: your email
+   - Developer contact: your email
+4. Click **Save and Continue**
+5. On Scopes page, click **Add or Remove Scopes**
+   - Find and check `https://www.googleapis.com/auth/calendar`
+   - Click **Update** → **Save and Continue**
+6. On Test users page, add your email for testing → **Save and Continue**
+7. Review and go back to dashboard
+
+### Step 4: Create OAuth Credentials (Desktop App with PKCE)
+
+1. Go to **APIs & Services** → **Credentials**
+2. Click **+ Create Credentials** → **OAuth client ID**
+3. Application type: **Desktop app**
+4. Name: `Call Tracking Calendar Desktop`
+5. Click **Create**
+6. Click **Download JSON**
+7. Rename the file to `credentials.json`
+8. Place it in the `resources/` folder of this project
+
+The downloaded file will look like this (no client_secret needed for Desktop apps):
+```json
+{
+  "installed": {
+    "client_id": "XXXX.apps.googleusercontent.com",
+    "project_id": "your-project",
+    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+    "token_uri": "https://oauth2.googleapis.com/token",
+    "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+    "redirect_uris": ["http://localhost"]
+  }
+}
+```
+
+### Step 5: For Production Distribution
+
+Before distributing to users beyond testing:
+
+1. Go back to **OAuth consent screen**
+2. Click **Publish App** to move from Testing to Production
+3. Submit for **Google Verification** (required if you have >100 users)
+   - This prevents the "unverified app" warning
+   - Requires privacy policy, terms of service, and review process
 
 ## Usage
 

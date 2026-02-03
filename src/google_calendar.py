@@ -110,9 +110,11 @@ class GoogleCalendar:
             "refresh_token": creds.refresh_token,
             "token_uri": creds.token_uri,
             "client_id": creds.client_id,
-            "client_secret": creds.client_secret,
             "scopes": list(creds.scopes or []),
         }
+        # Only include client_secret if present (not needed for PKCE/Desktop apps)
+        if creds.client_secret:
+            creds_data["client_secret"] = creds.client_secret
         keyring.set_password(KEYRING_SERVICE, KEYRING_USERNAME, json.dumps(creds_data))
 
     def authenticate(self, open_browser: bool = True) -> bool:
