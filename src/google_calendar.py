@@ -43,11 +43,14 @@ SCOPES = ["https://www.googleapis.com/auth/calendar"]
 KEYRING_SERVICE = "CallTrackingCalendar"
 KEYRING_USERNAME = "google_oauth"
 
-# Calendar name
-CALENDAR_NAME = "Call Tracking"
+# Default calendar name
+DEFAULT_CALENDAR_NAME = "Call Tracking"
 
 # Default path for OAuth client credentials
 DEFAULT_CREDENTIALS_PATH = Path(__file__).parent.parent / "resources" / "credentials.json"
+
+# Settings keys
+SETTINGS_CALENDAR_NAME = "calendar_name"
 
 
 @dataclass
@@ -82,16 +85,51 @@ class CalendarNotFoundError(GoogleCalendarError):
 class GoogleCalendar:
     """Interface for Google Calendar API."""
 
-    def __init__(self, credentials_path: Optional[Path] = None):
+    def __init__(self, credentials_path: Optional[Path] = None, calendar_name: Optional[str] = None):
         """Initialize with optional custom credentials path.
 
         Args:
             credentials_path: Path to the OAuth client credentials JSON file.
+            calendar_name: Custom calendar name (defaults to "Call Tracking").
         """
         self.credentials_path = credentials_path or DEFAULT_CREDENTIALS_PATH
         self._credentials: Optional[Credentials] = None
         self._service = None
         self._calendar_id: Optional[str] = None
+        self._calendar_name = calendar_name or self._load_calendar_name()
+
+    def _load_calendar_name(self) -> str:
+        """Load calendar name from settings or use default."""
+        try:
+            from .sync_database import SyncDatabase
+            db = SyncDatabase()
+            db.initialize()
+            name = db.get_setting(SETTINGS_CALENDAR_NAME)
+            return name if name else DEFAULT_CALENDAR_NAME
+        except Exception:
+            return DEFAULT_CALENDAR_NAME
+
+    def get_calendar_name(self) -> str:
+        """Get the current calendar name."""
+        return self._calendar_name
+
+    def set_calendar_name(self, name: str) -> None:
+        """Set the calendar name.
+
+        Args:
+            name: New calendar name.
+        """
+        if not name or not name.strip():
+            raise ValueError("Calendar name cannot be empty")
+        self._calendar_name = name.strip()
+        self._calendar_id = None  # Reset cached calendar ID
+        try:
+            from .sync_database import SyncDatabase
+            db = SyncDatabase()
+            db.initialize()
+            db.set_setting(SETTINGS_CALENDAR_NAME, self._calendar_name)
+        except Exception as e:
+            logger.warning(f"Failed to save calendar name setting: {e}")
 
     @property
     def is_authenticated(self) -> bool:
@@ -207,14 +245,15 @@ class GoogleCalendar:
             return self._calendar_id
 
         service = self._get_service()
+        calendar_name = self._calendar_name
 
         # First, try to find existing calendar
         try:
             calendar_list = service.calendarList().list().execute()
             for calendar in calendar_list.get("items", []):
-                if calendar["summary"] == CALENDAR_NAME:
+                if calendar["summary"] == calendar_name:
                     self._calendar_id = calendar["id"]
-                    logger.info(f"Found existing calendar: {CALENDAR_NAME}")
+                    logger.info(f"Found existing calendar: {calendar_name}")
                     return self._calendar_id
         except HttpError as e:
             logger.error(f"Failed to list calendars: {e}")
@@ -223,13 +262,13 @@ class GoogleCalendar:
         # Create new calendar
         try:
             calendar = {
-                "summary": CALENDAR_NAME,
+                "summary": calendar_name,
                 "description": "Automatically synced call history from macOS",
                 "timeZone": "UTC",
             }
             created = service.calendars().insert(body=calendar).execute()
             self._calendar_id = created["id"]
-            logger.info(f"Created new calendar: {CALENDAR_NAME}")
+            logger.info(f"Created new calendar: {calendar_name}")
             return self._calendar_id
         except HttpError as e:
             logger.error(f"Failed to create calendar: {e}")
@@ -420,6 +459,95 @@ class GoogleCalendar:
                 return False
             logger.error(f"Failed to delete event: {e}")
             raise GoogleCalendarError(f"Failed to delete event: {e}") from e
+
+    def clear_calendar(
+        self, on_progress: Optional[Callable[[int, int], None]] = None
+    ) -> int:
+        """Delete all events from the calendar.
+
+        Args:
+            on_progress: Optional callback(deleted, total) for progress updates.
+
+        Returns:
+            Number of events deleted.
+        """
+        calendar_id = self.get_or_create_calendar()
+        service = self._get_service()
+
+        deleted_count = 0
+        page_token = None
+
+        try:
+            # First, count total events
+            total_events = 0
+            temp_token = None
+            while True:
+                events_result = service.events().list(
+                    calendarId=calendar_id,
+                    maxResults=250,
+                    pageToken=temp_token,
+                    singleEvents=True,
+                ).execute()
+                total_events += len(events_result.get("items", []))
+                temp_token = events_result.get("nextPageToken")
+                if not temp_token:
+                    break
+
+            if total_events == 0:
+                return 0
+
+            logger.info(f"Clearing {total_events} events from calendar")
+
+            # Delete events in batches
+            while True:
+                events_result = service.events().list(
+                    calendarId=calendar_id,
+                    maxResults=50,
+                    pageToken=page_token,
+                    singleEvents=True,
+                ).execute()
+
+                events = events_result.get("items", [])
+                if not events:
+                    break
+
+                batch = service.new_batch_http_request()
+                batch_count = 0
+
+                for event in events:
+                    event_id = event["id"]
+                    batch.add(
+                        service.events().delete(calendarId=calendar_id, eventId=event_id)
+                    )
+                    batch_count += 1
+
+                if batch_count > 0:
+                    batch.execute()
+                    deleted_count += batch_count
+
+                    if on_progress:
+                        on_progress(deleted_count, total_events)
+
+                    logger.info(f"Deleted {deleted_count}/{total_events} events")
+
+                page_token = events_result.get("nextPageToken")
+                if not page_token:
+                    # Continue deleting - there may be more events
+                    # Check if there are any events left
+                    check_result = service.events().list(
+                        calendarId=calendar_id,
+                        maxResults=1,
+                        singleEvents=True,
+                    ).execute()
+                    if not check_result.get("items"):
+                        break
+
+            logger.info(f"Cleared {deleted_count} events from calendar")
+            return deleted_count
+
+        except HttpError as e:
+            logger.error(f"Failed to clear calendar: {e}")
+            raise GoogleCalendarError(f"Failed to clear calendar: {e}") from e
 
     def get_event(self, event_id: str) -> Optional[CalendarEvent]:
         """Get a calendar event by ID.

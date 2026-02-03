@@ -250,8 +250,40 @@ class PreferencesWindow:
                 contacts_frame, text="Enable Contacts Access", command=self._enable_contacts
             ).pack(anchor=tk.W, pady=5)
 
+        # Calendar settings
+        calendar_frame = ttk.LabelFrame(parent, text="Calendar", padding="10")
+        calendar_frame.pack(fill=tk.X, pady=5)
+
+        # Calendar name
+        name_frame = ttk.Frame(calendar_frame)
+        name_frame.pack(fill=tk.X, pady=2)
+        ttk.Label(name_frame, text="Calendar name:").pack(side=tk.LEFT)
+        self.calendar_name_var = tk.StringVar(value=self.google_calendar.get_calendar_name())
+        self.calendar_name_entry = ttk.Entry(name_frame, textvariable=self.calendar_name_var, width=25)
+        self.calendar_name_entry.pack(side=tk.LEFT, padx=10)
+        ttk.Button(name_frame, text="Save", command=self._save_calendar_name).pack(side=tk.LEFT)
+
+        ttk.Label(
+            calendar_frame,
+            text="Note: Changing the name creates a new calendar. Existing events stay in the old calendar.",
+            foreground="gray",
+            font=("Helvetica", 10),
+        ).pack(anchor=tk.W, pady=(5, 0))
+
+        # Clear calendar
+        clear_frame = ttk.Frame(calendar_frame)
+        clear_frame.pack(fill=tk.X, pady=(10, 0))
+        ttk.Button(
+            clear_frame, text="Clear All Events", command=self._clear_calendar
+        ).pack(side=tk.LEFT)
+        ttk.Label(
+            clear_frame,
+            text="Delete all events from the calendar",
+            foreground="gray",
+        ).pack(side=tk.LEFT, padx=10)
+
         # Data management
-        data_frame = ttk.LabelFrame(parent, text="Data Management", padding="10")
+        data_frame = ttk.LabelFrame(parent, text="Sync History", padding="10")
         data_frame.pack(fill=tk.X, pady=5)
 
         ttk.Label(
@@ -420,6 +452,69 @@ class PreferencesWindow:
                 self._refresh_status()
             except Exception as e:
                 messagebox.showerror("Error", str(e))
+
+    def _save_calendar_name(self) -> None:
+        """Save the calendar name setting."""
+        new_name = self.calendar_name_var.get().strip()
+        if not new_name:
+            messagebox.showerror("Error", "Calendar name cannot be empty.")
+            return
+
+        old_name = self.google_calendar.get_calendar_name()
+        if new_name == old_name:
+            messagebox.showinfo("Info", "Calendar name unchanged.")
+            return
+
+        if messagebox.askyesno(
+            "Change Calendar Name",
+            f"Change calendar from '{old_name}' to '{new_name}'?\n\n"
+            "This will create a new calendar. Existing events will remain\n"
+            "in the old calendar.",
+        ):
+            try:
+                self.google_calendar.set_calendar_name(new_name)
+                messagebox.showinfo(
+                    "Success",
+                    f"Calendar name changed to '{new_name}'.\n\n"
+                    "New calls will sync to the new calendar.",
+                )
+            except Exception as e:
+                messagebox.showerror("Error", str(e))
+
+    def _clear_calendar(self) -> None:
+        """Clear all events from the calendar."""
+        calendar_name = self.google_calendar.get_calendar_name()
+        if not messagebox.askyesno(
+            "Clear Calendar",
+            f"Delete ALL events from '{calendar_name}'?\n\n"
+            "This cannot be undone.",
+        ):
+            return
+
+        try:
+            if self.root:
+                self.root.config(cursor="wait")
+                self.root.update()
+
+            deleted = self.google_calendar.clear_calendar()
+
+            if self.root:
+                self.root.config(cursor="")
+
+            # Also clear sync history so calls can be re-synced
+            self.sync_db.initialize()
+            self.sync_db.clear_all_synced_calls()
+
+            messagebox.showinfo(
+                "Success",
+                f"Deleted {deleted} events from '{calendar_name}'.\n"
+                "Sync history has also been cleared.",
+            )
+            self._refresh_status()
+        except Exception as e:
+            if self.root:
+                self.root.config(cursor="")
+            messagebox.showerror("Error", f"Failed to clear calendar: {e}")
 
     def _close(self) -> None:
         """Close the window."""
