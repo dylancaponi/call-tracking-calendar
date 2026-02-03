@@ -7,7 +7,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import keyring
 from google.auth.transport.requests import Request
@@ -15,8 +15,12 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+from googleapiclient.http import BatchHttpRequest
 
 from .call_database import CallRecord
+
+# Maximum events per batch request (Google's limit is 50)
+BATCH_SIZE = 50
 
 logger = logging.getLogger(__name__)
 
@@ -278,6 +282,113 @@ class GoogleCalendar:
         except HttpError as e:
             logger.error(f"Failed to create event: {e}")
             raise GoogleCalendarError(f"Failed to create event: {e}") from e
+
+    def _build_event_body(self, call: CallRecord) -> Dict[str, Any]:
+        """Build a calendar event body from a call record.
+
+        Args:
+            call: The call record.
+
+        Returns:
+            Dictionary representing the event body.
+        """
+        summary = f"Call with {call.display_name}"
+        duration = max(call.duration_seconds, 60)
+        end_time = call.timestamp + timedelta(seconds=duration)
+
+        description_parts = [
+            f"Direction: {call.direction}",
+            f"Duration: {call.duration_formatted}",
+            f"Answered: {'Yes' if call.is_answered else 'No'}",
+        ]
+        if call.phone_number:
+            description_parts.append(f"Number: {call.phone_number}")
+
+        return {
+            "summary": summary,
+            "description": "\n".join(description_parts),
+            "start": {
+                "dateTime": call.timestamp.isoformat(),
+                "timeZone": "UTC",
+            },
+            "end": {
+                "dateTime": end_time.isoformat(),
+                "timeZone": "UTC",
+            },
+            "extendedProperties": {
+                "private": {
+                    "callUniqueId": call.unique_id,
+                }
+            },
+        }
+
+    def create_events_batch(
+        self,
+        calls: List[CallRecord],
+        on_progress: Optional[Callable[[int, int], None]] = None,
+    ) -> List[Tuple[str, Optional[str], Optional[str]]]:
+        """Create multiple calendar events in batches.
+
+        Args:
+            calls: List of call records to create events for.
+            on_progress: Optional callback(completed, total) for progress updates.
+
+        Returns:
+            List of tuples: (call_unique_id, event_id or None, error or None)
+        """
+        if not calls:
+            return []
+
+        calendar_id = self.get_or_create_calendar()
+        service = self._get_service()
+        results: List[Tuple[str, Optional[str], Optional[str]]] = []
+        total = len(calls)
+
+        # Process in batches
+        for batch_start in range(0, total, BATCH_SIZE):
+            batch_calls = calls[batch_start:batch_start + BATCH_SIZE]
+            batch_results: Dict[str, Tuple[Optional[str], Optional[str]]] = {}
+
+            def make_callback(call_id: str):
+                def callback(request_id, response, exception):
+                    if exception is not None:
+                        logger.error(f"Batch insert failed for {call_id}: {exception}")
+                        batch_results[call_id] = (None, str(exception))
+                    else:
+                        batch_results[call_id] = (response["id"], None)
+                return callback
+
+            batch = service.new_batch_http_request()
+
+            for call in batch_calls:
+                event_body = self._build_event_body(call)
+                batch.add(
+                    service.events().insert(calendarId=calendar_id, body=event_body),
+                    callback=make_callback(call.unique_id),
+                )
+
+            try:
+                batch.execute()
+            except HttpError as e:
+                logger.error(f"Batch request failed: {e}")
+                # Mark all in this batch as failed
+                for call in batch_calls:
+                    if call.unique_id not in batch_results:
+                        batch_results[call.unique_id] = (None, str(e))
+
+            # Collect results for this batch
+            for call in batch_calls:
+                event_id, error = batch_results.get(call.unique_id, (None, "Unknown error"))
+                results.append((call.unique_id, event_id, error))
+
+            # Progress callback
+            if on_progress:
+                completed = min(batch_start + BATCH_SIZE, total)
+                on_progress(completed, total)
+
+            logger.info(f"Batch progress: {len(results)}/{total} events processed")
+
+        return results
 
     def delete_event(self, event_id: str) -> bool:
         """Delete a calendar event.

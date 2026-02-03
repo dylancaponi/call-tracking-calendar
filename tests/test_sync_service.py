@@ -202,19 +202,24 @@ class TestSyncService:
             ),
         ]
         mock_call_db.get_calls.return_value = iter(calls)
-        mock_calendar.create_event_from_call.side_effect = ["event-1", "event-2"]
+        # Mock batch create to return success for both calls
+        mock_calendar.create_events_batch.return_value = [
+            ("call-1", "event-1", None),
+            ("call-2", "event-2", None),
+        ]
 
         result = service.sync()
 
         assert result.success
         assert result.calls_synced == 2
         assert result.calls_skipped == 0
-        assert mock_calendar.create_event_from_call.call_count == 2
+        assert mock_calendar.create_events_batch.call_count == 1
 
     def test_sync_skips_already_synced(
         self,
         service: SyncService,
         mock_call_db: MagicMock,
+        mock_calendar: MagicMock,
         sync_db: SyncDatabase,
     ):
         """Test that sync skips already synced calls."""
@@ -242,6 +247,8 @@ class TestSyncService:
             ),
         ]
         mock_call_db.get_calls.return_value = iter(calls)
+        # Only one call to sync, so it uses single request (not batch)
+        mock_calendar.create_event_from_call.return_value = "event-2"
 
         result = service.sync()
 

@@ -5,9 +5,9 @@ from __future__ import annotations
 import logging
 import sys
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 from .call_database import CallDatabase, CallRecord
 from .google_calendar import GoogleCalendar, GoogleCalendarError, AuthenticationError
@@ -16,6 +16,13 @@ from .sync_database import SyncDatabase
 # Configure logging
 LOG_DIR = Path.home() / "Library" / "Logs" / "CallTrackingCalendar"
 LOG_FILE = LOG_DIR / "sync.log"
+
+# Default sync period for first sync (30 days)
+DEFAULT_SYNC_DAYS = 30
+
+# Setting key for tracking if initial sync was done
+SETTING_INITIAL_SYNC_DONE = "initial_sync_done"
+SETTING_SYNC_ALL_HISTORY = "sync_all_history"
 
 
 def setup_logging(verbose: bool = False) -> None:
@@ -105,18 +112,48 @@ class SyncService:
 
         return errors
 
+    def _get_default_since(self) -> Optional[datetime]:
+        """Get the default 'since' date for syncing.
+
+        Returns 30 days ago for first sync, None for subsequent syncs.
+        """
+        # Check if user wants all history
+        if self.sync_db.get_setting(SETTING_SYNC_ALL_HISTORY) == "true":
+            return None
+
+        # Check if initial sync was already done
+        if self.sync_db.get_setting(SETTING_INITIAL_SYNC_DONE) == "true":
+            return None  # Subsequent syncs get all new calls
+
+        # First sync: default to last 30 days
+        return datetime.now(timezone.utc) - timedelta(days=DEFAULT_SYNC_DAYS)
+
+    def set_sync_all_history(self, enabled: bool) -> None:
+        """Enable or disable syncing all history.
+
+        Args:
+            enabled: If True, sync all history instead of just 30 days.
+        """
+        self.sync_db.initialize()
+        self.sync_db.set_setting(SETTING_SYNC_ALL_HISTORY, "true" if enabled else "false")
+
     def sync(
         self,
         answered_only: bool = True,
         since: Optional[datetime] = None,
         dry_run: bool = False,
+        use_batch: bool = True,
+        on_progress: Optional[Callable[[int, int], None]] = None,
     ) -> SyncResult:
         """Perform a sync operation.
 
         Args:
             answered_only: Only sync answered calls.
-            since: Only sync calls after this time. If None, syncs all unsynced calls.
+            since: Only sync calls after this time. If None, uses default (30 days for
+                   first sync, all new calls for subsequent syncs).
             dry_run: If True, don't actually create events.
+            use_batch: If True, use batch API for faster syncing.
+            on_progress: Optional callback(completed, total) for progress updates.
 
         Returns:
             SyncResult with details of the sync operation.
@@ -152,6 +189,12 @@ class SyncService:
                 finished_at=datetime.now(timezone.utc),
             )
 
+        # Determine the 'since' date
+        if since is None:
+            since = self._get_default_since()
+            if since:
+                logger.info(f"First sync: limiting to calls since {since.date()}")
+
         # Get already synced call IDs for efficient filtering
         try:
             synced_ids = self.sync_db.get_synced_call_ids()
@@ -169,13 +212,13 @@ class SyncService:
 
         # Get calls from the call database
         try:
-            calls = list(
+            all_calls = list(
                 self.call_db.get_calls(
                     since=since,
                     answered_only=answered_only,
                 )
             )
-            logger.info(f"Found {len(calls)} calls to process")
+            logger.info(f"Found {len(all_calls)} calls in database")
         except PermissionError as e:
             logger.error(f"Permission error: {e}")
             return SyncResult(
@@ -197,35 +240,70 @@ class SyncService:
                 finished_at=datetime.now(timezone.utc),
             )
 
-        # Process each call
-        for call in calls:
-            # Skip already synced calls
-            if call.unique_id in synced_ids:
-                calls_skipped += 1
-                continue
+        # Filter out already synced calls
+        calls_to_sync = [c for c in all_calls if c.unique_id not in synced_ids]
+        calls_skipped = len(all_calls) - len(calls_to_sync)
+        logger.info(f"Calls to sync: {len(calls_to_sync)}, skipped: {calls_skipped}")
 
-            if dry_run:
-                logger.info(f"[DRY RUN] Would sync call: {call.unique_id}")
-                calls_synced += 1
-                continue
+        if not calls_to_sync:
+            # Mark initial sync as done even if no calls to sync
+            self.sync_db.set_setting(SETTING_INITIAL_SYNC_DONE, "true")
+            return SyncResult(
+                success=True,
+                calls_synced=0,
+                calls_skipped=calls_skipped,
+                errors=[],
+                started_at=started_at,
+                finished_at=datetime.now(timezone.utc),
+            )
 
-            # Create calendar event
-            try:
-                event_id = self.calendar.create_event_from_call(call)
-                self.sync_db.mark_call_synced(call.unique_id, event_id)
-                calls_synced += 1
-                logger.info(
-                    f"Synced call {call.unique_id}: {call.display_name} "
-                    f"({call.direction}, {call.duration_formatted})"
-                )
-            except GoogleCalendarError as e:
-                error_msg = f"Failed to sync call {call.unique_id}: {e}"
-                logger.error(error_msg)
-                errors.append(error_msg)
-            except Exception as e:
-                error_msg = f"Unexpected error syncing call {call.unique_id}: {e}"
-                logger.error(error_msg)
-                errors.append(error_msg)
+        if dry_run:
+            logger.info(f"[DRY RUN] Would sync {len(calls_to_sync)} calls")
+            return SyncResult(
+                success=True,
+                calls_synced=len(calls_to_sync),
+                calls_skipped=calls_skipped,
+                errors=[],
+                started_at=started_at,
+                finished_at=datetime.now(timezone.utc),
+            )
+
+        # Sync calls - use batch API for multiple calls
+        if use_batch and len(calls_to_sync) > 1:
+            # Use batch API
+            results = self.calendar.create_events_batch(calls_to_sync, on_progress)
+
+            for call_id, event_id, error in results:
+                if event_id:
+                    self.sync_db.mark_call_synced(call_id, event_id)
+                    calls_synced += 1
+                else:
+                    errors.append(f"Failed to sync call {call_id}: {error}")
+        else:
+            # Single call or batch disabled - use individual requests
+            for i, call in enumerate(calls_to_sync):
+                try:
+                    event_id = self.calendar.create_event_from_call(call)
+                    self.sync_db.mark_call_synced(call.unique_id, event_id)
+                    calls_synced += 1
+                    logger.info(
+                        f"Synced call {call.unique_id}: {call.display_name} "
+                        f"({call.direction}, {call.duration_formatted})"
+                    )
+                except GoogleCalendarError as e:
+                    error_msg = f"Failed to sync call {call.unique_id}: {e}"
+                    logger.error(error_msg)
+                    errors.append(error_msg)
+                except Exception as e:
+                    error_msg = f"Unexpected error syncing call {call.unique_id}: {e}"
+                    logger.error(error_msg)
+                    errors.append(error_msg)
+
+                if on_progress:
+                    on_progress(i + 1, len(calls_to_sync))
+
+        # Mark initial sync as done
+        self.sync_db.set_setting(SETTING_INITIAL_SYNC_DONE, "true")
 
         finished_at = datetime.now(timezone.utc)
         success = len(errors) == 0
@@ -290,6 +368,16 @@ def main() -> int:
         action="store_true",
         help="Include missed/unanswered calls (default: answered only)",
     )
+    parser.add_argument(
+        "--all-history",
+        action="store_true",
+        help="Sync all call history (default: last 30 days for first sync)",
+    )
+    parser.add_argument(
+        "--no-batch",
+        action="store_true",
+        help="Disable batch API (slower, but useful for debugging)",
+    )
     args = parser.parse_args()
 
     setup_logging(verbose=args.verbose)
@@ -297,9 +385,15 @@ def main() -> int:
     logger.info("Starting sync service")
 
     service = SyncService()
+
+    # If user wants all history, set that preference
+    if args.all_history:
+        service.set_sync_all_history(True)
+
     result = service.sync(
         answered_only=not args.all_calls,
         dry_run=args.dry_run,
+        use_batch=not args.no_batch,
     )
 
     return 0 if result.success else 1
