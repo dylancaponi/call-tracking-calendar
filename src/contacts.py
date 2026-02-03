@@ -3,10 +3,46 @@
 from __future__ import annotations
 
 import logging
+import platform
 import re
 from typing import Dict, Optional
 
 logger = logging.getLogger(__name__)
+
+# Check if we can use the Contacts framework
+# PyObjC 11.x requires macOS 14.1+, earlier versions crash on import
+def _check_contacts_available() -> bool:
+    """Check if Contacts framework is available without crashing."""
+    try:
+        # Parse macOS version
+        version = platform.mac_ver()[0]
+        parts = version.split('.')
+        major = int(parts[0])
+        minor = int(parts[1]) if len(parts) > 1 else 0
+
+        # macOS 14.1+ required for PyObjC 11.x
+        if major < 14 or (major == 14 and minor < 1):
+            logger.debug(f"macOS {version} too old for PyObjC Contacts (need 14.1+)")
+            return False
+
+        # Use subprocess to safely test if import works (avoids crashing main process)
+        import subprocess
+        import sys
+        result = subprocess.run(
+            [sys.executable, '-c', 'import Contacts'],
+            capture_output=True,
+            timeout=5
+        )
+        if result.returncode != 0:
+            logger.debug(f"Contacts import failed: {result.stderr.decode()}")
+            return False
+
+        return True
+    except Exception as e:
+        logger.debug(f"Contacts framework check failed: {e}")
+        return False
+
+CONTACTS_FRAMEWORK_AVAILABLE = _check_contacts_available()
 
 # Cache for contact lookups to avoid repeated queries
 _contact_cache: Dict[str, Optional[str]] = {}
@@ -41,6 +77,9 @@ def get_contact_name(phone_number: str) -> Optional[str]:
 
 def _lookup_contact_via_framework(phone_number: str) -> Optional[str]:
     """Look up contact using macOS Contacts framework."""
+    if not CONTACTS_FRAMEWORK_AVAILABLE:
+        return None
+
     try:
         import Contacts
 
@@ -102,6 +141,9 @@ def preload_contacts(phone_numbers: list[str]) -> Dict[str, Optional[str]]:
     """
     results = {}
 
+    if not CONTACTS_FRAMEWORK_AVAILABLE:
+        return {num: None for num in phone_numbers}
+
     try:
         import Contacts
 
@@ -148,6 +190,9 @@ def preload_contacts(phone_numbers: list[str]) -> Dict[str, Optional[str]]:
 
 def is_contacts_authorized() -> bool:
     """Check if the app has Contacts access."""
+    if not CONTACTS_FRAMEWORK_AVAILABLE:
+        return False
+
     try:
         import Contacts
 
@@ -167,6 +212,9 @@ def request_contacts_access() -> bool:
     Note: This triggers the system permission dialog if status is NotDetermined.
     If previously denied, the user must grant access via System Settings.
     """
+    if not CONTACTS_FRAMEWORK_AVAILABLE:
+        return False
+
     try:
         import Contacts
         import time
@@ -214,8 +262,11 @@ def get_contacts_authorization_status() -> str:
     """Get the current Contacts authorization status.
 
     Returns:
-        One of: 'not_determined', 'restricted', 'denied', 'authorized', 'unknown'
+        One of: 'not_determined', 'restricted', 'denied', 'authorized', 'unavailable', 'unknown'
     """
+    if not CONTACTS_FRAMEWORK_AVAILABLE:
+        return 'unavailable'
+
     try:
         import Contacts
 
@@ -229,7 +280,7 @@ def get_contacts_authorization_status() -> str:
             3: 'authorized',
         }.get(status, 'unknown')
     except ImportError:
-        return 'unknown'
+        return 'unavailable'
     except Exception:
         return 'unknown'
 

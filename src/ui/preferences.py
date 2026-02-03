@@ -6,12 +6,29 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 from typing import Callable, Optional
 
-from ..contacts import (
-    get_contacts_authorization_status,
-    is_contacts_authorized,
-    open_contacts_settings,
-    request_contacts_access,
-)
+try:
+    from ..contacts import (
+        get_contacts_authorization_status,
+        is_contacts_authorized,
+        open_contacts_settings,
+        request_contacts_access,
+    )
+    CONTACTS_AVAILABLE = True
+except Exception:
+    CONTACTS_AVAILABLE = False
+
+    def is_contacts_authorized():
+        return False
+
+    def get_contacts_authorization_status():
+        return 'unknown'
+
+    def open_contacts_settings():
+        import subprocess
+        subprocess.run(['open', 'x-apple.systempreferences:com.apple.preference.security?Privacy_Contacts'])
+
+    def request_contacts_access():
+        return False
 from ..google_calendar import GoogleCalendar
 from ..launchagent import (
     get_logs,

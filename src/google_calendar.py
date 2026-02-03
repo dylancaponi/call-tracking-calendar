@@ -18,7 +18,18 @@ from googleapiclient.errors import HttpError
 from googleapiclient.http import BatchHttpRequest
 
 from .call_database import CallRecord
-from .contacts import get_contact_name, preload_contacts
+
+try:
+    from .contacts import get_contact_name, preload_contacts
+    CONTACTS_AVAILABLE = True
+except Exception:
+    CONTACTS_AVAILABLE = False
+
+    def get_contact_name(phone_number):
+        return None
+
+    def preload_contacts(phone_numbers):
+        return {num: None for num in phone_numbers}
 
 # Maximum events per batch request (Google's limit is 50)
 BATCH_SIZE = 50
@@ -146,10 +157,12 @@ class GoogleCalendar:
             )
 
             # Use loopback IP for OAuth callback
+            # prompt='select_account' forces account chooser even if already logged in
             creds = flow.run_local_server(
                 port=0,  # Use any available port
                 open_browser=open_browser,
                 success_message="Authentication successful! You can close this window.",
+                prompt='select_account',
             )
 
             self._save_credentials(creds)

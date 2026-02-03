@@ -7,14 +7,32 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 from typing import Callable, List, Optional, Tuple
 
-from ..contacts import (
-    get_contacts_authorization_status,
-    is_contacts_authorized,
-    open_contacts_settings,
-    request_contacts_access,
-)
+try:
+    from ..contacts import (
+        get_contacts_authorization_status,
+        is_contacts_authorized,
+        open_contacts_settings,
+        request_contacts_access,
+    )
+    CONTACTS_AVAILABLE = True
+except Exception:
+    CONTACTS_AVAILABLE = False
+
+    def is_contacts_authorized():
+        return False
+
+    def get_contacts_authorization_status():
+        return 'unknown'
+
+    def open_contacts_settings():
+        import subprocess
+        subprocess.run(['open', 'x-apple.systempreferences:com.apple.preference.security?Privacy_Contacts'])
+
+    def request_contacts_access():
+        return False
 from ..google_calendar import GoogleCalendar, AuthenticationError
 from ..launchagent import install as install_launchagent, is_installed
+from ..sync_service import SyncService
 from ..permissions import (
     check_full_disk_access,
     get_permission_instructions,
@@ -50,8 +68,9 @@ class SetupWizard:
         """Run the setup wizard."""
         self.root = tk.Tk()
         self.root.title("Call Tracking Calendar Setup")
-        self.root.geometry("600x450")
-        self.root.resizable(False, False)
+        self.root.geometry("650x500")
+        self.root.resizable(True, True)
+        self.root.minsize(600, 450)
 
         # Center the window
         self.root.update_idletasks()
@@ -86,8 +105,8 @@ class SetupWizard:
 
         for i, (name, _) in enumerate(self.steps):
             label_text = f"● {name}" if i == step else f"○ {name}"
-            label = ttk.Label(step_frame, text=label_text)
-            label.pack(side=tk.LEFT, padx=10)
+            label = ttk.Label(step_frame, text=label_text, font=("Helvetica", 10))
+            label.pack(side=tk.LEFT, padx=5)
 
         # Create content frame
         content_frame = ttk.Frame(self.main_frame)
@@ -222,7 +241,9 @@ Click "Next" to begin setup.
                 parent,
                 text=(
                     "Click the button below to sign in with your Google account.\n"
-                    "A browser window will open for authentication."
+                    "A browser window will open for authentication.\n\n"
+                    "Tip: When prompted for Keychain access, click 'Always Allow'\n"
+                    "to store your credentials securely without repeated prompts."
                 ),
                 justify=tk.CENTER,
             ).pack(pady=20)
@@ -263,15 +284,42 @@ Click "Next" to begin setup.
 
     def _authenticate_google(self) -> None:
         """Perform Google authentication."""
+        # First disconnect any existing credentials to force fresh login
+        self.google_calendar.logout()
+
+        # Show info message
+        messagebox.showinfo(
+            "Sign in with Google",
+            "A browser window will open.\n\n"
+            "Please select or sign into the Google account you want to use.\n\n"
+            "If prompted for Keychain access, click 'Always Allow' to avoid\n"
+            "repeated password prompts.\n\n"
+            "The app will wait for you to complete sign-in."
+        )
+
         try:
+            if self.root:
+                self.root.config(cursor="wait")
+                self.root.update()
+
             self.google_calendar.authenticate()
+
+            if self.root:
+                self.root.config(cursor="")
+
             messagebox.showinfo("Success", "Successfully connected to Google Calendar!")
             self._show_step(2)  # Refresh the step
         except FileNotFoundError as e:
+            if self.root:
+                self.root.config(cursor="")
             messagebox.showerror("Error", str(e))
         except AuthenticationError as e:
+            if self.root:
+                self.root.config(cursor="")
             messagebox.showerror("Authentication Failed", str(e))
         except Exception as e:
+            if self.root:
+                self.root.config(cursor="")
             messagebox.showerror("Error", f"An unexpected error occurred: {e}")
 
     def _disconnect_google(self) -> None:
@@ -293,6 +341,9 @@ Click "Next" to begin setup.
         if is_authorized:
             status_text = "✓ Contacts access is granted"
             status_color = "green"
+        elif status == 'unavailable':
+            status_text = "⚠ Contacts feature requires macOS 14.1+"
+            status_color = "orange"
         elif status == 'denied':
             status_text = "✗ Contacts access was denied"
             status_color = "red"
@@ -303,46 +354,69 @@ Click "Next" to begin setup.
         status_label = ttk.Label(parent, text=status_text, foreground=status_color)
         status_label.pack(pady=10)
 
-        ttk.Label(
-            parent,
-            text=(
-                "Granting Contacts access allows the app to show contact names\n"
-                "instead of phone numbers in your calendar events.\n\n"
-                "For example: 'Call with John Smith' instead of 'Call with +1-555-123-4567'\n\n"
-                "This is optional - the app works fine without it."
-            ),
-            justify=tk.CENTER,
-        ).pack(pady=20)
-
-        if not is_authorized:
-            if status == 'denied':
-                ttk.Label(
-                    parent,
-                    text="To enable, open System Settings and add this app to Contacts.",
-                    foreground="gray",
-                ).pack(pady=5)
-                ttk.Button(
-                    parent,
-                    text="Open System Settings",
-                    command=open_contacts_settings,
-                ).pack(pady=5)
-                ttk.Button(
-                    parent,
-                    text="Check Again",
-                    command=lambda: self._show_step(3),
-                ).pack(pady=5)
-            else:
-                ttk.Button(
-                    parent,
-                    text="Enable Contacts Access",
-                    command=self._request_contacts,
-                ).pack(pady=10)
+        if status == 'unavailable':
+            ttk.Label(
+                parent,
+                text=(
+                    "The Contacts feature requires macOS 14.1 or later.\n\n"
+                    "Your calendar events will show phone numbers instead of names.\n"
+                    "You can still use all other features of the app."
+                ),
+                justify=tk.CENTER,
+            ).pack(pady=20)
         else:
             ttk.Label(
                 parent,
-                text="Calendar events will show contact names when available.",
-                foreground="gray",
+                text=(
+                    "Granting Contacts access allows the app to show contact names\n"
+                    "instead of phone numbers in your calendar events.\n\n"
+                    "For example: 'Call with John Smith' instead of 'Call with +1-555-123-4567'\n\n"
+                    "This is optional - the app works fine without it."
+                ),
+                justify=tk.CENTER,
             ).pack(pady=10)
+
+            # Note about terminal vs bundled app
+            ttk.Label(
+                parent,
+                text=(
+                    "Note: When running from Terminal/iTerm, grant access to your\n"
+                    "terminal app. The bundled .app will have its own permission."
+                ),
+                foreground="gray",
+                font=("Helvetica", 10),
+                justify=tk.CENTER,
+            ).pack(pady=5)
+
+            if not is_authorized:
+                if status == 'denied':
+                    ttk.Label(
+                        parent,
+                        text="To enable, add your terminal app in System Settings > Contacts.",
+                        foreground="gray",
+                    ).pack(pady=5)
+                    ttk.Button(
+                        parent,
+                        text="Open System Settings",
+                        command=open_contacts_settings,
+                    ).pack(pady=5)
+                    ttk.Button(
+                        parent,
+                        text="Check Again",
+                        command=lambda: self._show_step(3),
+                    ).pack(pady=5)
+                else:
+                    ttk.Button(
+                        parent,
+                        text="Enable Contacts Access",
+                        command=self._request_contacts,
+                    ).pack(pady=10)
+            else:
+                ttk.Label(
+                    parent,
+                    text="Calendar events will show contact names when available.",
+                    foreground="gray",
+                ).pack(pady=10)
 
         # Navigation buttons
         btn_frame = ttk.Frame(parent)
@@ -380,9 +454,29 @@ Click "Next" to begin setup.
         """Create the LaunchAgent step."""
         ttk.Label(
             parent,
-            text="Background Sync",
+            text="Sync Your Calls",
             font=("Helvetica", 18, "bold"),
         ).pack(pady=(20, 10))
+
+        # Sync Now section
+        sync_frame = ttk.LabelFrame(parent, text="Sync Now", padding="10")
+        sync_frame.pack(fill=tk.X, padx=20, pady=10)
+
+        ttk.Label(
+            sync_frame,
+            text="Sync your calls from the last 30 days to Google Calendar now.",
+            justify=tk.CENTER,
+        ).pack(pady=5)
+
+        ttk.Button(
+            sync_frame,
+            text="Sync Last 30 Days",
+            command=self._sync_now,
+        ).pack(pady=10)
+
+        # Background sync section
+        agent_frame = ttk.LabelFrame(parent, text="Background Sync (Optional)", padding="10")
+        agent_frame.pack(fill=tk.X, padx=20, pady=10)
 
         agent_installed = is_installed()
 
@@ -390,31 +484,24 @@ Click "Next" to begin setup.
             status_text = "✓ Background sync is enabled"
             status_color = "green"
         else:
-            status_text = "○ Background sync is not enabled"
+            status_text = "○ Not enabled"
             status_color = "gray"
 
-        status_label = ttk.Label(parent, text=status_text, foreground=status_color)
-        status_label.pack(pady=10)
+        status_label = ttk.Label(agent_frame, text=status_text, foreground=status_color)
+        status_label.pack(pady=5)
 
         ttk.Label(
-            parent,
-            text=(
-                "Enable background sync to automatically sync new calls every 5 minutes.\n"
-                "This runs silently in the background and uses minimal resources."
-            ),
+            agent_frame,
+            text="Automatically sync new calls every 5 minutes.",
             justify=tk.CENTER,
-        ).pack(pady=20)
+        ).pack(pady=5)
 
         if not agent_installed:
             ttk.Button(
-                parent,
+                agent_frame,
                 text="Enable Background Sync",
                 command=self._install_launchagent,
-            ).pack(pady=10)
-        else:
-            ttk.Label(parent, text="Background sync is already configured.").pack(
-                pady=10
-            )
+            ).pack(pady=5)
 
         # Navigation buttons
         btn_frame = ttk.Frame(parent)
@@ -426,6 +513,43 @@ Click "Next" to begin setup.
         ttk.Button(btn_frame, text="Next →", command=lambda: self._show_step(5)).pack(
             side=tk.RIGHT
         )
+
+    def _sync_now(self) -> None:
+        """Perform an immediate sync."""
+        messagebox.showinfo(
+            "Syncing...",
+            "Syncing your calls from the last 30 days.\n\n"
+            "This may take a moment. Click OK to start."
+        )
+
+        try:
+            if self.root:
+                self.root.config(cursor="wait")
+                self.root.update()
+
+            service = SyncService()
+            result = service.sync()
+
+            if self.root:
+                self.root.config(cursor="")
+
+            if result.success:
+                messagebox.showinfo(
+                    "Sync Complete",
+                    f"Successfully synced {result.calls_synced} calls!\n"
+                    f"Skipped {result.calls_skipped} already synced.\n\n"
+                    f"Check your Google Calendar for the 'Call Tracking' calendar."
+                )
+            else:
+                errors = "\n".join(result.errors[:3])  # Show first 3 errors
+                messagebox.showerror(
+                    "Sync Failed",
+                    f"Sync completed with errors:\n{errors}"
+                )
+        except Exception as e:
+            if self.root:
+                self.root.config(cursor="")
+            messagebox.showerror("Error", f"Sync failed: {e}")
 
     def _install_launchagent(self) -> None:
         """Install the LaunchAgent."""
