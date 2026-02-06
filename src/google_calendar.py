@@ -235,6 +235,36 @@ class GoogleCalendar:
         self._service = build("calendar", "v3", credentials=creds)
         return self._service
 
+    # Marker in description to identify calendars created by this app
+    CALENDAR_DESCRIPTION_MARKER = "Automatically synced call history from macOS"
+
+    def check_calendar_name(self, name: str) -> Tuple[bool, bool]:
+        """Check if a calendar with this name exists and if it's ours.
+
+        Args:
+            name: Calendar name to check.
+
+        Returns:
+            Tuple of (exists, is_ours).
+            - exists: True if a calendar with this name exists
+            - is_ours: True if the calendar was created by this app
+        """
+        service = self._get_service()
+
+        try:
+            calendar_list = service.calendarList().list().execute()
+            for calendar in calendar_list.get("items", []):
+                if calendar.get("summary") == name:
+                    # Check if it's ours by looking at the description
+                    description = calendar.get("description", "")
+                    is_ours = self.CALENDAR_DESCRIPTION_MARKER in description
+                    return (True, is_ours)
+        except HttpError as e:
+            logger.error(f"Failed to check calendar: {e}")
+            raise GoogleCalendarError(f"Failed to check calendar: {e}") from e
+
+        return (False, False)
+
     def get_or_create_calendar(self) -> str:
         """Get or create the Call Tracking calendar.
 
@@ -263,7 +293,7 @@ class GoogleCalendar:
         try:
             calendar = {
                 "summary": calendar_name,
-                "description": "Automatically synced call history from macOS",
+                "description": self.CALENDAR_DESCRIPTION_MARKER,
                 "timeZone": "UTC",
             }
             created = service.calendars().insert(body=calendar).execute()
@@ -320,19 +350,25 @@ class GoogleCalendar:
         # Use contact name if available, otherwise fall back to call's display_name
         display_name = contact_name or call.display_name
 
-        # Format duration as [M:SS] or [H:MM:SS]
+        # Format duration as [Xmin] or [Xh Ym] rounded to nearest minute
         dur_secs = call.duration_seconds
-        if dur_secs >= 3600:
-            hours = dur_secs // 3600
-            mins = (dur_secs % 3600) // 60
-            secs = dur_secs % 60
-            duration_str = f"{hours}:{mins:02d}:{secs:02d}"
+        total_mins = round(dur_secs / 60)
+        if total_mins < 1:
+            total_mins = 1  # Show at least 1min
+        if total_mins >= 60:
+            hours = total_mins // 60
+            mins = total_mins % 60
+            if mins > 0:
+                duration_str = f"{hours}h {mins}m"
+            else:
+                duration_str = f"{hours}h"
         else:
-            mins = dur_secs // 60
-            secs = dur_secs % 60
-            duration_str = f"{mins}:{secs:02d}"
+            duration_str = f"{total_mins}min"
 
-        summary = f"Call with {display_name} [{duration_str}]"
+        # Direction indicator: ↓ incoming, ↑ outgoing
+        direction_icon = "↑" if call.is_outgoing else "↓"
+
+        summary = f"{direction_icon} {display_name} [{duration_str}]"
 
         duration = max(call.duration_seconds, 60)
         end_time = call.timestamp + timedelta(seconds=duration)
@@ -340,7 +376,6 @@ class GoogleCalendar:
         description_parts = [
             f"Direction: {call.direction}",
             f"Duration: {call.duration_formatted}",
-            f"Answered: {'Yes' if call.is_answered else 'No'}",
         ]
         # Always include phone number in description
         if call.phone_number:

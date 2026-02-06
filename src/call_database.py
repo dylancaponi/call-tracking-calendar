@@ -148,9 +148,11 @@ class CallDatabase:
             params.append(min_apple_timestamp)
 
         if answered_only:
-            # For incoming calls, ZANSWERED=1 means answered
-            # For outgoing calls, ZANSWERED=0 but ZDURATION>0 means completed
-            query += " AND (ZANSWERED = 1 OR (ZORIGINATED = 1 AND ZDURATION > 0))"
+            # For incoming calls, ZANSWERED=1 means the user picked up
+            # For outgoing calls, ZANSWERED is always 0, so we use duration as indicator
+            # that the other person picked up (duration > 5 seconds = likely connected,
+            # shorter durations are usually just ringing/voicemail)
+            query += " AND (ZANSWERED = 1 OR (ZORIGINATED = 1 AND ZDURATION > 5))"
 
         query += " ORDER BY ZDATE ASC"
 

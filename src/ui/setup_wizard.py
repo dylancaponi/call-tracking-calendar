@@ -87,6 +87,9 @@ class SetupWizard:
         # Show first step
         self._show_step(0)
 
+        # Set macOS menu bar app name after window is shown
+        self.root.after(100, lambda: self._set_macos_app_name("Call Tracking Calendar"))
+
         self.root.mainloop()
 
     def _clear_frame(self) -> None:
@@ -611,6 +614,29 @@ Click "Next" to begin setup.
             self.root.destroy()
         if self.on_complete:
             self.on_complete()
+
+    def _set_macos_app_name(self, name: str) -> None:
+        """Set the macOS menu bar app name."""
+        try:
+            self.root.tk.call("tk", "appname", name)
+        except tk.TclError:
+            pass
+
+        try:
+            from AppKit import NSApplication, NSMenu, NSMenuItem
+            app = NSApplication.sharedApplication()
+            main_menu = app.mainMenu()
+            if main_menu and main_menu.numberOfItems() > 0:
+                app_menu_item = main_menu.itemAtIndex_(0)
+                if app_menu_item:
+                    app_menu_item.setTitle_(name)
+                    submenu = app_menu_item.submenu()
+                    if submenu:
+                        submenu.setTitle_(name)
+        except ImportError:
+            pass
+        except Exception:
+            pass
 
 
 def run_setup_wizard(on_complete: Optional[Callable[[], None]] = None) -> None:

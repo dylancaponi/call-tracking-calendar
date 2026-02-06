@@ -6,6 +6,44 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 from typing import Callable, Optional
 
+
+class Tooltip:
+    """Simple tooltip for Tkinter widgets."""
+
+    def __init__(self, widget: tk.Widget, text: str):
+        self.widget = widget
+        self.text = text
+        self.tooltip_window = None
+        widget.bind("<Enter>", self._show)
+        widget.bind("<Leave>", self._hide)
+
+    def _show(self, event=None):
+        if self.tooltip_window:
+            return
+        x = self.widget.winfo_rootx() + 20
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 5
+        self.tooltip_window = tw = tk.Toplevel(self.widget)
+        tw.wm_overrideredirect(True)
+        tw.wm_geometry(f"+{x}+{y}")
+        label = tk.Label(
+            tw,
+            text=self.text,
+            justify=tk.LEFT,
+            background="#ffffe0",
+            foreground="black",
+            relief=tk.SOLID,
+            borderwidth=1,
+            font=("Helvetica", 11),
+            padx=6,
+            pady=4,
+        )
+        label.pack()
+
+    def _hide(self, event=None):
+        if self.tooltip_window:
+            self.tooltip_window.destroy()
+            self.tooltip_window = None
+
 try:
     from ..contacts import (
         get_contacts_authorization_status,
@@ -61,8 +99,9 @@ class PreferencesWindow:
         """Run the preferences window."""
         self.root = tk.Tk()
         self.root.title("Call Tracking Calendar")
-        self.root.geometry("500x600")
-        self.root.resizable(False, False)
+        self.root.geometry("500x650")
+        self.root.resizable(True, True)
+        self.root.minsize(500, 600)
 
         # Center the window
         self.root.update_idletasks()
@@ -93,6 +132,9 @@ class PreferencesWindow:
 
         # Handle window close
         self.root.protocol("WM_DELETE_WINDOW", self._close)
+
+        # Set macOS menu bar app name after window is shown
+        self.root.after(100, lambda: self._set_macos_app_name("Call Tracking Calendar"))
 
         self.root.mainloop()
 
@@ -150,9 +192,28 @@ class PreferencesWindow:
             side=tk.LEFT, padx=10
         )
 
-        # Sync stats
-        stats_frame = ttk.LabelFrame(parent, text="Sync Statistics", padding="10")
-        stats_frame.pack(fill=tk.X, pady=5)
+        # Sync stats - custom header with info icon
+        stats_header = ttk.Frame(parent)
+        stats_header.pack(fill=tk.X, pady=(5, 0))
+        ttk.Label(
+            stats_header, text="Sync Statistics", font=("Helvetica", 11, "bold")
+        ).pack(side=tk.LEFT)
+        help_label = tk.Label(
+            stats_header, text="ⓘ", foreground="blue", cursor="hand2", font=("Helvetica", 11)
+        )
+        help_label.pack(side=tk.LEFT, padx=(5, 0))
+        Tooltip(
+            help_label,
+            "Only connected calls are synced\n"
+            "(where you or the other person picked up).\n\n"
+            "Recent calls may take time to sync from\n"
+            "your iPhone via iCloud. If a call is missing,\n"
+            "try making an outgoing FaceTime call from\n"
+            "this Mac to trigger a sync."
+        )
+
+        stats_frame = ttk.Frame(parent, padding="10")
+        stats_frame.pack(fill=tk.X, pady=(0, 5))
 
         ttk.Label(
             stats_frame, text=f"Synced calls: {status['synced_calls_count']}"
@@ -173,16 +234,22 @@ class PreferencesWindow:
             side=tk.LEFT, padx=10
         )
 
-        # Action buttons
-        btn_frame = ttk.Frame(parent)
-        btn_frame.pack(fill=tk.X, pady=20)
+        # Action buttons and status
+        action_frame = ttk.Frame(parent)
+        action_frame.pack(fill=tk.X, pady=(10, 5))
 
-        ttk.Button(btn_frame, text="Sync Now", command=self._sync_now).pack(
-            side=tk.LEFT, padx=5
+        btn_frame = ttk.Frame(action_frame)
+        btn_frame.pack(anchor=tk.W)
+
+        self.sync_btn = ttk.Button(btn_frame, text="Sync Now", command=self._sync_now)
+        self.sync_btn.pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Button(btn_frame, text="Refresh Stats", command=self._refresh_status).pack(
+            side=tk.LEFT
         )
-        ttk.Button(btn_frame, text="Refresh", command=self._refresh_status).pack(
-            side=tk.LEFT, padx=5
-        )
+
+        # Status label for sync progress
+        self.status_label = ttk.Label(action_frame, text="", foreground="gray")
+        self.status_label.pack(anchor=tk.W, pady=(5, 0))
 
     def _create_settings_tab(self, parent: ttk.Frame) -> None:
         """Create the settings tab content."""
@@ -282,6 +349,10 @@ class PreferencesWindow:
             foreground="gray",
         ).pack(side=tk.LEFT, padx=10)
 
+        # Status label for settings tab operations
+        self.settings_status_label = ttk.Label(calendar_frame, text="", foreground="gray")
+        self.settings_status_label.pack(anchor=tk.W, pady=(10, 0))
+
         # Data management
         data_frame = ttk.LabelFrame(parent, text="Sync History", padding="10")
         data_frame.pack(fill=tk.X, pady=5)
@@ -328,25 +399,52 @@ class PreferencesWindow:
         )
 
     def _sync_now(self) -> None:
-        """Trigger an immediate sync."""
-        # First try to use the LaunchAgent
-        if run_now():
-            messagebox.showinfo(
-                "Sync Started", "Background sync has been triggered."
-            )
-        else:
-            # Fall back to running sync directly
+        """Trigger an immediate sync with progress updates."""
+        # Disable button during sync
+        self.sync_btn.config(state=tk.DISABLED)
+        self._update_status("Starting sync...")
+
+        def do_sync():
             try:
-                result = self.sync_service.sync()
+                # Get calls to sync
+                self._update_status("Reading call history...")
+                if self.root:
+                    self.root.update()
+
+                result = self.sync_service.sync(
+                    on_progress=self._on_sync_progress
+                )
+
+                self._update_status(
+                    f"Done: {result.calls_synced} synced, {result.calls_skipped} skipped"
+                )
                 messagebox.showinfo(
                     "Sync Complete",
                     f"Synced {result.calls_synced} calls.\n"
                     f"Skipped {result.calls_skipped} already synced.",
                 )
             except Exception as e:
+                self._update_status(f"Error: {e}")
                 messagebox.showerror("Sync Failed", str(e))
+            finally:
+                self.sync_btn.config(state=tk.NORMAL)
 
-        self._refresh_status()
+        # Run sync (Tkinter doesn't have great threading, but this keeps UI responsive)
+        if self.root:
+            self.root.after(100, do_sync)
+
+    def _on_sync_progress(self, completed: int, total: int) -> None:
+        """Handle sync progress updates."""
+        self._update_status(f"Syncing... {completed}/{total} calls")
+        if self.root:
+            self.root.update()
+
+    def _update_status(self, text: str) -> None:
+        """Update the status label."""
+        if hasattr(self, 'status_label'):
+            self.status_label.config(text=text)
+            if self.root:
+                self.root.update_idletasks()
 
     def _refresh_status(self) -> None:
         """Refresh the status tab."""
@@ -465,12 +563,29 @@ class PreferencesWindow:
             messagebox.showinfo("Info", "Calendar name unchanged.")
             return
 
-        if messagebox.askyesno(
-            "Change Calendar Name",
-            f"Change calendar from '{old_name}' to '{new_name}'?\n\n"
-            "This will create a new calendar. Existing events will remain\n"
-            "in the old calendar.",
-        ):
+        # Check if a calendar with this name already exists
+        try:
+            exists, is_ours = self.google_calendar.check_calendar_name(new_name)
+            if exists and not is_ours:
+                messagebox.showerror(
+                    "Name Already Used",
+                    f"A calendar named '{new_name}' already exists in your\n"
+                    "Google account and was not created by this app.\n\n"
+                    "Using this name could result in accidentally deleting\n"
+                    "your personal events. Please choose a different name.",
+                )
+                return
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to check calendar: {e}")
+            return
+
+        confirm_msg = f"Change calendar from '{old_name}' to '{new_name}'?\n\n"
+        if exists and is_ours:
+            confirm_msg += "A Call Tracking calendar with this name already exists.\nNew calls will sync to that calendar."
+        else:
+            confirm_msg += "This will create a new calendar. Existing events will remain\nin the old calendar."
+
+        if messagebox.askyesno("Change Calendar Name", confirm_msg):
             try:
                 self.google_calendar.set_calendar_name(new_name)
                 messagebox.showinfo(
@@ -482,7 +597,7 @@ class PreferencesWindow:
                 messagebox.showerror("Error", str(e))
 
     def _clear_calendar(self) -> None:
-        """Clear all events from the calendar."""
+        """Clear all events from the calendar with progress updates."""
         calendar_name = self.google_calendar.get_calendar_name()
         if not messagebox.askyesno(
             "Clear Calendar",
@@ -491,30 +606,66 @@ class PreferencesWindow:
         ):
             return
 
-        try:
+        self._update_settings_status("Clearing calendar...")
+
+        def do_clear():
+            try:
+                def on_progress(deleted, total):
+                    self._update_settings_status(f"Deleting... {deleted}/{total} events")
+
+                deleted = self.google_calendar.clear_calendar(on_progress=on_progress)
+
+                # Also clear sync history so calls can be re-synced
+                self._update_settings_status("Clearing sync history...")
+
+                self.sync_db.initialize()
+                self.sync_db.clear_all_synced_calls()
+
+                self._update_settings_status(f"Done: Deleted {deleted} events")
+                messagebox.showinfo(
+                    "Success",
+                    f"Deleted {deleted} events from '{calendar_name}'.\n"
+                    "Sync history has also been cleared.",
+                )
+            except Exception as e:
+                self._update_settings_status(f"Error: {e}")
+                messagebox.showerror("Error", f"Failed to clear calendar: {e}")
+
+        if self.root:
+            self.root.after(100, do_clear)
+
+    def _update_settings_status(self, text: str) -> None:
+        """Update the settings tab status label."""
+        if hasattr(self, 'settings_status_label'):
+            self.settings_status_label.config(text=text)
             if self.root:
-                self.root.config(cursor="wait")
+                self.root.update_idletasks()
                 self.root.update()
 
-            deleted = self.google_calendar.clear_calendar()
+    def _set_macos_app_name(self, name: str) -> None:
+        """Set the macOS menu bar app name."""
+        # Try Tk appname first
+        try:
+            self.root.tk.call("tk", "appname", name)
+        except tk.TclError:
+            pass
 
-            if self.root:
-                self.root.config(cursor="")
-
-            # Also clear sync history so calls can be re-synced
-            self.sync_db.initialize()
-            self.sync_db.clear_all_synced_calls()
-
-            messagebox.showinfo(
-                "Success",
-                f"Deleted {deleted} events from '{calendar_name}'.\n"
-                "Sync history has also been cleared.",
-            )
-            self._refresh_status()
-        except Exception as e:
-            if self.root:
-                self.root.config(cursor="")
-            messagebox.showerror("Error", f"Failed to clear calendar: {e}")
+        # Use PyObjC to modify the application menu directly
+        try:
+            from AppKit import NSApplication, NSMenu, NSMenuItem
+            app = NSApplication.sharedApplication()
+            main_menu = app.mainMenu()
+            if main_menu and main_menu.numberOfItems() > 0:
+                app_menu_item = main_menu.itemAtIndex_(0)
+                if app_menu_item:
+                    app_menu_item.setTitle_(name)
+                    submenu = app_menu_item.submenu()
+                    if submenu:
+                        submenu.setTitle_(name)
+        except ImportError:
+            pass
+        except Exception:
+            pass
 
     def _close(self) -> None:
         """Close the window."""

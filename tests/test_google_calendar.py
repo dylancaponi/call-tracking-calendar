@@ -102,7 +102,8 @@ class TestCallRecordToEvent:
         call_args = mock_calendar._service.events().insert.call_args
         event_body = call_args.kwargs.get("body") or call_args[1].get("body")
 
-        assert event_body["summary"] == "Call with John Doe [5:00]"
+        # ↓ for incoming, 5 min duration
+        assert event_body["summary"] == "↓ John Doe [5min]"
 
     def test_create_event_from_call_times(self, mock_calendar, sample_call):
         """Test that event times are set correctly."""
@@ -127,11 +128,12 @@ class TestCallRecordToEvent:
         description = event_body["description"]
         assert "Direction: Incoming" in description
         assert "Duration: 5 minutes" in description
-        assert "Answered: Yes" in description
         assert "Number: +15551234567" in description
+        # "Answered" is not included since we only sync answered calls
+        assert "Answered" not in description
 
     def test_create_event_from_call_outgoing(self, mock_calendar):
-        """Test event description for outgoing call."""
+        """Test event description and summary for outgoing call."""
         call = CallRecord(
             unique_id="test-call-2",
             phone_number="+15551234567",
@@ -148,6 +150,8 @@ class TestCallRecordToEvent:
         event_body = call_args.kwargs.get("body") or call_args[1].get("body")
 
         assert "Direction: Outgoing" in event_body["description"]
+        # ↑ for outgoing
+        assert event_body["summary"] == "↑ Jane Smith [1min]"
 
     def test_create_event_from_call_no_contact_name(self, mock_calendar):
         """Test event summary when no contact name is available."""
@@ -166,7 +170,8 @@ class TestCallRecordToEvent:
         call_args = mock_calendar._service.events().insert.call_args
         event_body = call_args.kwargs.get("body") or call_args[1].get("body")
 
-        assert event_body["summary"] == "Call with +15559876543 [2:00]"
+        # ↓ for incoming, 2 min duration
+        assert event_body["summary"] == "↓ +15559876543 [2min]"
 
     def test_create_event_minimum_duration(self, mock_calendar):
         """Test that short calls have minimum 1 minute duration for visibility."""
