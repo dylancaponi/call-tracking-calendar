@@ -268,10 +268,7 @@ class PreferencesWindow:
         self.sync_full_btn = ttk.Button(
             btn_frame, text="Sync Full History", command=lambda: self._sync_now(days=None)
         )
-        self.sync_full_btn.pack(side=tk.LEFT, padx=(0, 10))
-        ttk.Button(btn_frame, text="Refresh Stats", command=self._refresh_status).pack(
-            side=tk.LEFT
-        )
+        self.sync_full_btn.pack(side=tk.LEFT)
 
         # Status label for sync progress
         self.status_label = ttk.Label(action_frame, text="", foreground="gray")
