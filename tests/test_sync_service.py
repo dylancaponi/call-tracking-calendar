@@ -247,6 +247,10 @@ class TestSyncService:
             ),
         ]
         mock_call_db.get_calls.return_value = iter(calls)
+        # call-1 is still on the calendar (was synced previously)
+        mock_calendar.get_synced_call_ids.return_value = {
+            "call-1": "existing-event",
+        }
         # Only one call to sync, so it uses single request (not batch)
         mock_calendar.create_event_from_call.return_value = "event-2"
 
@@ -482,6 +486,57 @@ class TestSyncService:
         mock_calendar.create_event_from_call.assert_called_once()
         synced_call = mock_calendar.create_event_from_call.call_args[0][0]
         assert synced_call.unique_id == "call-2"
+
+    def test_sync_resyncs_events_deleted_from_calendar(
+        self,
+        service: SyncService,
+        mock_call_db: MagicMock,
+        mock_calendar: MagicMock,
+        sync_db: SyncDatabase,
+    ):
+        """Events deleted from Google Calendar should be removed from sync DB and re-synced."""
+        calls = [
+            CallRecord(
+                unique_id="call-1",
+                phone_number="+15551234567",
+                contact_name="John",
+                timestamp=datetime(2024, 1, 15, 10, 0, 0, tzinfo=timezone.utc),
+                duration_seconds=60,
+                is_answered=True,
+                is_outgoing=False,
+            ),
+            CallRecord(
+                unique_id="call-2",
+                phone_number="+15559876543",
+                contact_name="Jane",
+                timestamp=datetime(2024, 1, 15, 11, 0, 0, tzinfo=timezone.utc),
+                duration_seconds=120,
+                is_answered=True,
+                is_outgoing=True,
+            ),
+        ]
+        mock_call_db.get_calls.return_value = iter(calls)
+
+        # call-1 was previously synced but user deleted it from Google Calendar
+        sync_db.mark_call_synced("call-1", "old-event-1")
+        # call-2 is still on the calendar
+        sync_db.mark_call_synced("call-2", "event-2")
+
+        # Calendar only has call-2 — call-1 was deleted by user
+        mock_calendar.get_synced_call_ids.return_value = {
+            "call-2": "event-2",
+        }
+        mock_calendar.create_event_from_call.return_value = "new-event-1"
+
+        result = service.sync()
+
+        assert result.success
+        assert result.calls_synced == 1
+        assert result.calls_skipped == 1
+        # call-1 should have been re-created
+        mock_calendar.create_event_from_call.assert_called_once()
+        synced_call = mock_calendar.create_event_from_call.call_args[0][0]
+        assert synced_call.unique_id == "call-1"
 
     def test_get_sync_status(
         self,

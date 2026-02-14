@@ -291,6 +291,17 @@ class SyncService:
 
                 if remote_only:
                     logger.info(f"Found {len(remote_only)} events synced by another device")
+
+                # Detect events deleted from calendar — remove from local DB so they re-sync
+                local_call_ids = {c.unique_id for c in all_calls}
+                locally_synced_in_range = synced_ids & local_call_ids
+                deleted_from_calendar = locally_synced_in_range - set(remote_ids.keys())
+                for call_id in deleted_from_calendar:
+                    self.sync_db.remove_synced_call(call_id)
+                    synced_ids.discard(call_id)
+
+                if deleted_from_calendar:
+                    logger.info(f"Detected {len(deleted_from_calendar)} events deleted from calendar, will re-sync")
             except Exception as e:
                 logger.warning(f"Cross-device dedup check failed: {e}")
 
