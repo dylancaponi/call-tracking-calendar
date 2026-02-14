@@ -5,44 +5,43 @@ from __future__ import annotations
 import logging
 import platform
 import re
+import sqlite3
+from pathlib import Path
 from typing import Dict, Optional
 
 logger = logging.getLogger(__name__)
 
-# Check if we can use the Contacts framework
-# PyObjC 11.x requires macOS 14.1+, earlier versions crash on import
-def _check_contacts_available() -> bool:
-    """Check if Contacts framework is available without crashing."""
+ADDRESSBOOK_DB_PATH = Path.home() / "Library/Application Support/AddressBook/AddressBook-v22.abcddb"
+
+
+def _check_contacts_available() -> Optional[str]:
+    """Check which contacts backend is available.
+
+    Returns:
+        'framework' if PyObjC Contacts framework is importable,
+        'addressbook_db' if AddressBook SQLite DB exists (fallback),
+        or None if neither is available.
+    """
     try:
-        # Parse macOS version
-        version = platform.mac_ver()[0]
-        parts = version.split('.')
-        major = int(parts[0])
-        minor = int(parts[1]) if len(parts) > 1 else 0
-
-        # macOS 14.1+ required for PyObjC 11.x
-        if major < 14 or (major == 14 and minor < 1):
-            logger.debug(f"macOS {version} too old for PyObjC Contacts (need 14.1+)")
-            return False
-
-        # Use subprocess to safely test if import works (avoids crashing main process)
-        import subprocess
-        import sys
-        result = subprocess.run(
-            [sys.executable, '-c', 'import Contacts'],
-            capture_output=True,
-            timeout=5
-        )
-        if result.returncode != 0:
-            logger.debug(f"Contacts import failed: {result.stderr.decode()}")
-            return False
-
-        return True
+        import Contacts  # noqa: F401
+        return 'framework'
+    except ImportError:
+        logger.debug("PyObjC Contacts framework not installed")
     except Exception as e:
         logger.debug(f"Contacts framework check failed: {e}")
-        return False
 
-CONTACTS_FRAMEWORK_AVAILABLE = _check_contacts_available()
+    # Fallback: check for AddressBook SQLite database
+    if ADDRESSBOOK_DB_PATH.exists():
+        logger.debug(f"Using AddressBook SQLite fallback: {ADDRESSBOOK_DB_PATH}")
+        return 'addressbook_db'
+
+    return None
+
+
+_CONTACTS_BACKEND: Optional[str] = _check_contacts_available()
+
+# Backward compat: True if any backend is available
+CONTACTS_FRAMEWORK_AVAILABLE = _CONTACTS_BACKEND is not None
 
 # Cache for contact lookups to avoid repeated queries
 _contact_cache: Dict[str, Optional[str]] = {}
@@ -70,16 +69,19 @@ def get_contact_name(phone_number: str) -> Optional[str]:
     if normalized in _contact_cache:
         return _contact_cache[normalized]
 
-    name = _lookup_contact_via_framework(phone_number)
+    if _CONTACTS_BACKEND == 'framework':
+        name = _lookup_contact_via_framework(phone_number)
+    elif _CONTACTS_BACKEND == 'addressbook_db':
+        name = _lookup_contact_via_addressbook_db(phone_number)
+    else:
+        name = None
+
     _contact_cache[normalized] = name
     return name
 
 
 def _lookup_contact_via_framework(phone_number: str) -> Optional[str]:
     """Look up contact using macOS Contacts framework."""
-    if not CONTACTS_FRAMEWORK_AVAILABLE:
-        return None
-
     try:
         import Contacts
 
@@ -96,6 +98,7 @@ def _lookup_contact_via_framework(phone_number: str) -> Optional[str]:
             Contacts.CNContactGivenNameKey,
             Contacts.CNContactFamilyNameKey,
             Contacts.CNContactOrganizationNameKey,
+            Contacts.CNContactPhoneNumbersKey,
         ]
 
         # Create phone number predicate
@@ -128,6 +131,62 @@ def _lookup_contact_via_framework(phone_number: str) -> Optional[str]:
         return None
 
 
+def _lookup_contact_via_addressbook_db(phone_number: str) -> Optional[str]:
+    """Look up contact name via AddressBook SQLite database (fallback for older macOS)."""
+    digits = normalize_phone_number(phone_number)
+    if len(digits) < 7:
+        return None
+    # Match on last 10 digits to handle country code differences
+    match_digits = digits[-10:]
+
+    try:
+        with sqlite3.connect(f"file:{ADDRESSBOOK_DB_PATH}?mode=ro", uri=True) as conn:
+            rows = conn.execute("""
+                SELECT r.ZFIRSTNAME, r.ZLASTNAME, r.ZORGANIZATION, p.ZFULLNUMBER
+                FROM ZABCDRECORD r
+                JOIN ZABCDPHONENUMBER p ON r.Z_PK = p.ZOWNER
+            """).fetchall()
+
+            for first, last, org, full_number in rows:
+                if full_number:
+                    num_digits = re.sub(r'\D', '', full_number)
+                    if num_digits.endswith(match_digits):
+                        name = f"{first or ''} {last or ''}".strip()
+                        if not name:
+                            name = org or None
+                        return name if name else None
+        return None
+    except (sqlite3.OperationalError, OSError) as e:
+        logger.debug(f"AddressBook DB lookup failed: {e}")
+        return None
+
+
+def _load_all_contacts_from_addressbook_db() -> Dict[str, str]:
+    """Load all contacts from AddressBook DB into a digits→name lookup dict."""
+    lookup: Dict[str, str] = {}
+    try:
+        with sqlite3.connect(f"file:{ADDRESSBOOK_DB_PATH}?mode=ro", uri=True) as conn:
+            rows = conn.execute("""
+                SELECT r.ZFIRSTNAME, r.ZLASTNAME, r.ZORGANIZATION, p.ZFULLNUMBER
+                FROM ZABCDRECORD r
+                JOIN ZABCDPHONENUMBER p ON r.Z_PK = p.ZOWNER
+            """).fetchall()
+
+            for first, last, org, full_number in rows:
+                if full_number:
+                    num_digits = re.sub(r'\D', '', full_number)
+                    if len(num_digits) >= 7:
+                        name = f"{first or ''} {last or ''}".strip()
+                        if not name:
+                            name = org or ''
+                        if name:
+                            # Store keyed by last 10 digits for matching
+                            lookup[num_digits[-10:]] = name
+    except (sqlite3.OperationalError, OSError) as e:
+        logger.debug(f"AddressBook DB bulk load failed: {e}")
+    return lookup
+
+
 def preload_contacts(phone_numbers: list[str]) -> Dict[str, Optional[str]]:
     """Preload contact names for a list of phone numbers.
 
@@ -141,7 +200,21 @@ def preload_contacts(phone_numbers: list[str]) -> Dict[str, Optional[str]]:
     """
     results = {}
 
-    if not CONTACTS_FRAMEWORK_AVAILABLE:
+    if _CONTACTS_BACKEND == 'addressbook_db':
+        # Bulk load all contacts from DB, then match
+        all_contacts = _load_all_contacts_from_addressbook_db()
+        for phone_number in phone_numbers:
+            normalized = normalize_phone_number(phone_number)
+            if normalized in _contact_cache:
+                results[phone_number] = _contact_cache[normalized]
+                continue
+            match_digits = normalized[-10:] if len(normalized) >= 7 else normalized
+            name = all_contacts.get(match_digits)
+            _contact_cache[normalized] = name
+            results[phone_number] = name
+        return results
+
+    if _CONTACTS_BACKEND != 'framework':
         return {num: None for num in phone_numbers}
 
     try:
@@ -190,20 +263,28 @@ def preload_contacts(phone_numbers: list[str]) -> Dict[str, Optional[str]]:
 
 def is_contacts_authorized() -> bool:
     """Check if the app has Contacts access."""
-    if not CONTACTS_FRAMEWORK_AVAILABLE:
-        return False
+    if _CONTACTS_BACKEND == 'framework':
+        try:
+            import Contacts
 
-    try:
-        import Contacts
+            status = Contacts.CNContactStore.authorizationStatusForEntityType_(
+                Contacts.CNEntityTypeContacts
+            )
+            return status == 3  # Authorized
+        except ImportError:
+            return False
+        except Exception:
+            return False
 
-        status = Contacts.CNContactStore.authorizationStatusForEntityType_(
-            Contacts.CNEntityTypeContacts
-        )
-        return status == 3  # Authorized
-    except ImportError:
-        return False
-    except Exception:
-        return False
+    if _CONTACTS_BACKEND == 'addressbook_db':
+        try:
+            with sqlite3.connect(f"file:{ADDRESSBOOK_DB_PATH}?mode=ro", uri=True) as conn:
+                conn.execute("SELECT 1 FROM ZABCDRECORD LIMIT 1")
+            return True
+        except (sqlite3.OperationalError, OSError):
+            return False
+
+    return False
 
 
 def request_contacts_access() -> bool:
@@ -212,7 +293,16 @@ def request_contacts_access() -> bool:
     Note: This triggers the system permission dialog if status is NotDetermined.
     If previously denied, the user must grant access via System Settings.
     """
-    if not CONTACTS_FRAMEWORK_AVAILABLE:
+    if _CONTACTS_BACKEND == 'addressbook_db':
+        # Reading the DB triggers the macOS TCC dialog on first access
+        try:
+            with sqlite3.connect(f"file:{ADDRESSBOOK_DB_PATH}?mode=ro", uri=True) as conn:
+                conn.execute("SELECT 1 FROM ZABCDRECORD LIMIT 1")
+            return True
+        except (sqlite3.OperationalError, OSError):
+            return False
+
+    if _CONTACTS_BACKEND != 'framework':
         return False
 
     try:
@@ -264,7 +354,17 @@ def get_contacts_authorization_status() -> str:
     Returns:
         One of: 'not_determined', 'restricted', 'denied', 'authorized', 'unavailable', 'unknown'
     """
-    if not CONTACTS_FRAMEWORK_AVAILABLE:
+    if _CONTACTS_BACKEND == 'addressbook_db':
+        try:
+            with sqlite3.connect(f"file:{ADDRESSBOOK_DB_PATH}?mode=ro", uri=True) as conn:
+                conn.execute("SELECT 1 FROM ZABCDRECORD LIMIT 1")
+            return 'authorized'
+        except sqlite3.OperationalError:
+            return 'denied'
+        except OSError:
+            return 'unavailable'
+
+    if _CONTACTS_BACKEND != 'framework':
         return 'unavailable'
 
     try:
