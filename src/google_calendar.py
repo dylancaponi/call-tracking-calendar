@@ -350,11 +350,14 @@ class GoogleCalendar:
         """Get the current calendar ID (creates calendar if needed)."""
         return self.get_or_create_calendar()
 
-    def create_event_from_call(self, call: CallRecord) -> str:
+    def create_event_from_call(
+        self, call: CallRecord, contact_name: Optional[str] = None
+    ) -> str:
         """Create a calendar event from a call record.
 
         Args:
             call: The call record to create an event for.
+            contact_name: Optional pre-resolved contact name.
 
         Returns:
             The created event ID.
@@ -363,7 +366,7 @@ class GoogleCalendar:
         service = self._get_service()
 
         # Build event body (includes contact name lookup)
-        event = self._build_event_body(call)
+        event = self._build_event_body(call, contact_name)
 
         try:
             created = (
@@ -449,12 +452,15 @@ class GoogleCalendar:
         self,
         calls: List[CallRecord],
         on_progress: Optional[Callable[[int, int], None]] = None,
+        contact_names: Optional[Dict[str, Optional[str]]] = None,
     ) -> List[Tuple[str, Optional[str], Optional[str]]]:
         """Create multiple calendar events in batches.
 
         Args:
             calls: List of call records to create events for.
             on_progress: Optional callback(completed, total) for progress updates.
+            contact_names: Optional pre-resolved phone→name mapping. If not
+                provided, contacts are looked up via the Contacts framework.
 
         Returns:
             List of tuples: (call_unique_id, event_id or None, error or None)
@@ -467,9 +473,10 @@ class GoogleCalendar:
         results: List[Tuple[str, Optional[str], Optional[str]]] = []
         total = len(calls)
 
-        # Preload contact names for all calls
-        phone_numbers = [call.phone_number for call in calls if call.phone_number]
-        contact_names = preload_contacts(phone_numbers)
+        # Use provided contact names or look them up
+        if contact_names is None:
+            phone_numbers = [call.phone_number for call in calls if call.phone_number]
+            contact_names = preload_contacts(phone_numbers)
         logger.info(f"Preloaded {sum(1 for v in contact_names.values() if v)} contact names")
 
         # Process in batches

@@ -224,8 +224,10 @@ class PreferencesWindow:
         help_label.pack(side=tk.LEFT, padx=(5, 0))
         Tooltip(
             help_label,
-            "Only connected calls are synced\n"
-            "(where you or the other person picked up).\n\n"
+            "Only connected calls are synced.\n"
+            "Incoming: you picked up.\n"
+            "Outgoing: the other person picked up\n"
+            "(calls under 30s are skipped as likely voicemail).\n\n"
             "Recent calls may take time to sync from\n"
             "your iPhone via iCloud. If a call is missing,\n"
             "use the Trigger iCloud Sync button to nudge it."

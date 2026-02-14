@@ -6,7 +6,7 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Set
+from typing import Dict, Optional, Set
 
 # Default location for the sync database
 DEFAULT_SYNC_DB_PATH = (
@@ -60,6 +60,16 @@ class SyncDatabase:
             conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_synced_calls_event_id
                 ON synced_calls(google_event_id)
+            """)
+
+            # Cache contact names so background sync (which lacks Contacts
+            # TCC permission) can still resolve phone numbers to names.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS contact_cache (
+                    phone_number TEXT PRIMARY KEY,
+                    contact_name TEXT NOT NULL,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
             """)
 
             conn.commit()
@@ -217,3 +227,45 @@ class SyncDatabase:
             cursor = conn.execute("DELETE FROM synced_calls")
             conn.commit()
             return cursor.rowcount
+
+    def update_contact_cache(self, contacts: Dict[str, str]) -> int:
+        """Update the contact name cache (upsert).
+
+        Args:
+            contacts: Mapping of phone_number -> contact_name.
+
+        Returns:
+            Number of entries written.
+        """
+        if not contacts:
+            return 0
+        now = datetime.now(timezone.utc).isoformat()
+        with sqlite3.connect(self.db_path) as conn:
+            conn.executemany(
+                """INSERT OR REPLACE INTO contact_cache
+                   (phone_number, contact_name, updated_at)
+                   VALUES (?, ?, ?)""",
+                [(phone, name, now) for phone, name in contacts.items()],
+            )
+            conn.commit()
+        return len(contacts)
+
+    def get_cached_contact_names(self, phone_numbers: list[str]) -> Dict[str, str]:
+        """Look up contact names from the cache.
+
+        Args:
+            phone_numbers: List of phone numbers to look up.
+
+        Returns:
+            Dict mapping phone_number -> contact_name for numbers found.
+        """
+        if not phone_numbers:
+            return {}
+        with sqlite3.connect(self.db_path) as conn:
+            placeholders = ",".join("?" for _ in phone_numbers)
+            cursor = conn.execute(
+                f"SELECT phone_number, contact_name FROM contact_cache "
+                f"WHERE phone_number IN ({placeholders})",
+                phone_numbers,
+            )
+            return {row[0]: row[1] for row in cursor.fetchall()}

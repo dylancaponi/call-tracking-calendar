@@ -148,11 +148,11 @@ class CallDatabase:
             params.append(min_apple_timestamp)
 
         if answered_only:
-            # For incoming calls, ZANSWERED=1 means the user picked up
-            # For outgoing calls, ZANSWERED is always 0, so we use duration as indicator
-            # that the other person picked up (duration > 5 seconds = likely connected,
-            # shorter durations are usually just ringing/voicemail)
-            query += " AND (ZANSWERED = 1 OR (ZORIGINATED = 1 AND ZDURATION > 5))"
+            # For incoming calls, ZANSWERED=1 means the user picked up.
+            # For outgoing calls, ZANSWERED is always 0 in the macOS DB, so we
+            # use duration as a proxy: >30s likely means someone picked up,
+            # while shorter durations are usually ringing or voicemail greetings.
+            query += " AND (ZANSWERED = 1 OR (ZORIGINATED = 1 AND ZDURATION > 30))"
 
         query += " GROUP BY ZUNIQUE_ID ORDER BY ZDATE ASC"
 

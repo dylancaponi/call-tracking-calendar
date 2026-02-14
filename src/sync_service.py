@@ -8,11 +8,23 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Callable, Dict, List, Optional
 
 from .call_database import CallDatabase, CallRecord
 from .google_calendar import GoogleCalendar, GoogleCalendarError, AuthenticationError
 from .sync_database import SyncDatabase
+
+try:
+    from .contacts import preload_contacts, is_contacts_authorized
+    CONTACTS_AVAILABLE = True
+except Exception:
+    CONTACTS_AVAILABLE = False
+
+    def preload_contacts(phone_numbers):
+        return {num: None for num in phone_numbers}
+
+    def is_contacts_authorized():
+        return False
 
 # Configure logging
 LOG_DIR = Path.home() / "Library" / "Logs" / "CallTrackingCalendar"
@@ -317,10 +329,15 @@ class SyncService:
                 finished_at=datetime.now(timezone.utc),
             )
 
+        # Resolve contact names: try live Contacts, fall back to cache
+        contact_names = self._resolve_contact_names(calls_to_sync)
+
         # Sync calls - use batch API for multiple calls
         if use_batch and len(calls_to_sync) > 1:
             # Use batch API
-            results = self.calendar.create_events_batch(calls_to_sync, on_progress)
+            results = self.calendar.create_events_batch(
+                calls_to_sync, on_progress, contact_names=contact_names
+            )
 
             for call_id, event_id, error in results:
                 if event_id:
@@ -332,7 +349,8 @@ class SyncService:
             # Single call or batch disabled - use individual requests
             for i, call in enumerate(calls_to_sync):
                 try:
-                    event_id = self.calendar.create_event_from_call(call)
+                    name = contact_names.get(call.phone_number)
+                    event_id = self.calendar.create_event_from_call(call, name)
                     self.sync_db.mark_call_synced(call.unique_id, event_id)
                     calls_synced += 1
                     logger.info(
@@ -368,6 +386,42 @@ class SyncService:
 
         logger.info(str(result))
         return result
+
+    def _resolve_contact_names(
+        self, calls: List[CallRecord]
+    ) -> Dict[str, Optional[str]]:
+        """Resolve contact names for calls, using cache as fallback.
+
+        When the Contacts framework is authorized (foreground app), names
+        are looked up live and saved to the sync DB cache for future use.
+        When it's not authorized (background launchd), the cache is used.
+        """
+        phone_numbers = list({c.phone_number for c in calls if c.phone_number})
+        if not phone_numbers:
+            return {}
+
+        if CONTACTS_AVAILABLE and is_contacts_authorized():
+            # Live lookup — foreground has Contacts permission
+            resolved = preload_contacts(phone_numbers)
+            # Save newly resolved names to cache for background use
+            to_cache = {p: n for p, n in resolved.items() if n}
+            if to_cache:
+                try:
+                    self.sync_db.update_contact_cache(to_cache)
+                    logger.debug(f"Cached {len(to_cache)} contact names")
+                except Exception as e:
+                    logger.warning(f"Failed to cache contact names: {e}")
+            return resolved
+
+        # No live access — use cached names
+        logger.info("Contacts not authorized, using cached contact names")
+        try:
+            cached = self.sync_db.get_cached_contact_names(phone_numbers)
+            logger.info(f"Resolved {len(cached)} names from contact cache")
+            return cached
+        except Exception as e:
+            logger.warning(f"Failed to read contact cache: {e}")
+            return {}
 
     def get_sync_status(self) -> dict:
         """Get the current sync status.
