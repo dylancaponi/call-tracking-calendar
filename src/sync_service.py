@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import logging.handlers
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -33,14 +34,18 @@ def setup_logging(verbose: bool = False) -> None:
     level = logging.DEBUG if verbose else logging.INFO
     format_str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
-    logging.basicConfig(
-        level=level,
-        format=format_str,
-        handlers=[
-            logging.FileHandler(LOG_FILE),
-            logging.StreamHandler(sys.stdout),
-        ],
-    )
+    # Rotate at 1 MB, keep 1 backup
+    handlers: list[logging.Handler] = [
+        logging.handlers.RotatingFileHandler(LOG_FILE, maxBytes=1_000_000, backupCount=1),
+    ]
+    # Only add stdout when running interactively (not via launchd)
+    if sys.stdout.isatty():
+        handlers.append(logging.StreamHandler(sys.stdout))
+
+    logging.basicConfig(level=level, format=format_str, handlers=handlers)
+
+    # Suppress noisy Google API cache warning
+    logging.getLogger("googleapiclient.discovery_cache").setLevel(logging.ERROR)
 
 
 logger = logging.getLogger(__name__)
@@ -267,7 +272,7 @@ class SyncService:
         if not calls_to_sync:
             # Mark initial sync as done even if no calls to sync
             self.sync_db.set_setting(SETTING_INITIAL_SYNC_DONE, "true")
-            return SyncResult(
+            result = SyncResult(
                 success=True,
                 calls_synced=0,
                 calls_skipped=calls_skipped,
@@ -275,6 +280,8 @@ class SyncService:
                 started_at=started_at,
                 finished_at=datetime.now(timezone.utc),
             )
+            logger.info(str(result))
+            return result
 
         if dry_run:
             logger.info(f"[DRY RUN] Would sync {len(calls_to_sync)} calls")

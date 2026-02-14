@@ -79,7 +79,7 @@ def create_plist_content(
     """
     args = get_sync_arguments()
 
-    return {
+    plist = {
         "Label": LAUNCH_AGENT_LABEL,
         "ProgramArguments": args,
         "StartInterval": sync_interval,
@@ -102,6 +102,13 @@ def create_plist_content(
             "PATH": "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
         },
     }
+
+    if not getattr(sys, "frozen", False):
+        # Running as script — launchd needs the working directory
+        # so `python -m src.sync_service` can find the src package
+        plist["WorkingDirectory"] = str(Path(__file__).resolve().parent.parent)
+
+    return plist
 
 
 def is_installed() -> bool:
