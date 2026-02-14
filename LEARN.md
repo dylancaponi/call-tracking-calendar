@@ -181,3 +181,29 @@ Generic rules for macOS keychain in signed/notarized apps:
 6. **Search Perplexity for the exact error code** (`-25244`, `-25293`, etc.) immediately — don't guess at theories.
 
 Why this took too many credits: The first fix attempt was partial (reordered checks but left keychain in `is_setup_complete()`). Should have traced all call sites, eliminated unnecessary keychain access, AND added the security CLI fallback — all in one pass. Each incomplete fix burned a full build + notarize cycle.
+
+## Contacts Framework on macOS: Two Silent Failures
+
+### 1. Don't version-gate the Contacts framework import
+
+The code originally required macOS 14.1+ to use the PyObjC Contacts framework, falling back to the legacy AddressBook SQLite DB. This was wrong for two reasons:
+- PyObjC 12.x works fine on macOS 13.x (Ventura)
+- The legacy AddressBook DB (`~/Library/Application Support/AddressBook/AddressBook-v22.abcddb`) exists but is **empty** on modern macOS — contacts are stored in CloudKit, not the legacy DB
+
+**Fix:** Just try `import Contacts` directly. If it works, use it. No version check needed.
+
+### 2. CNContactPhoneNumbersKey MUST be in fetch keys for phone predicate
+
+When looking up contacts by phone number using `predicateForContactsMatchingPhoneNumber_`, the fetch keys passed to `unifiedContactsMatchingPredicate_keysToFetch_error_` must include `CNContactPhoneNumbersKey` — not just the name keys.
+
+Without it, the framework throws `CNPropertyNotFetchedException`. The `except Exception` handler silently catches this and returns `None`, making it look like no contacts matched.
+
+**How this manifested:** All 92 calls synced with raw phone numbers instead of contact names. The contacts module reported `backend=addressbook_db`, `authorized=True`, but the DB had 0 entries. After fixing the version gate → `backend=framework`, `authorized=True`, but all lookups returned `None`. Only by removing the `except Exception` temporarily did the real error surface.
+
+**How to debug next time:**
+1. Check `_CONTACTS_BACKEND` — should be `'framework'`, not `'addressbook_db'`
+2. Check authorization status — should be `3` (authorized)
+3. Test a raw predicate lookup outside the try/except to see actual errors
+4. The `except Exception` in `_lookup_contact_via_framework` hides everything — temporarily disable it when debugging
+
+**The test that prevents regression:** `test_includes_phone_numbers_key_in_fetch` verifies `CNContactPhoneNumbersKey` is always in the fetch keys list.

@@ -98,12 +98,25 @@ conn.execute('''CREATE TABLE ZCALLRECORD (
 
 Then use: `CallDatabase(Path('/tmp/test_calls.db'))`
 
+## Contacts Integration
+
+Two backends for contact name lookup, checked in order:
+1. **Contacts framework** (PyObjC) — works on macOS 13+ with PyObjC 12.x. No version gate needed.
+2. **AddressBook SQLite DB** — legacy fallback at `~/Library/Application Support/AddressBook/AddressBook-v22.abcddb`. Often empty on modern macOS (contacts stored in CloudKit).
+
+**Critical:** When using `predicateForContactsMatchingPhoneNumber_`, the fetch keys MUST include `CNContactPhoneNumbersKey` alongside name keys. Without it, the framework throws `CNPropertyNotFetchedException` which gets silently caught → all lookups return None.
+
+## Sync State & Calendar ID Tracking
+
+The sync DB stores the Google Calendar ID in settings. On each sync, if the stored calendar ID differs from the current one (user deleted the calendar), sync history is auto-cleared so calls re-sync. This avoids the confusing "skipped N already synced" state after calendar deletion.
+
 ## Common Issues
 
 1. **"Unable to open database"** - Need Full Disk Access
 2. **"No module named keyring"** - Activate venv first
 3. **"credentials.json not found"** - Download from Google Cloud Console
 4. **Tkinter issues on macOS** - May need `brew install python-tk`
+5. **Contact names not showing** - Check Contacts permission for your terminal app in System Settings > Privacy & Security > Contacts
 
 ## Building
 
