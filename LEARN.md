@@ -123,6 +123,12 @@ Don't split git add, git commit, and git status into separate calls. Chain them:
 
 That's it. Not 6+ calls with `pwd` and retries in between.
 
+### Read before Edit
+The Edit tool requires a prior Read of the file — Grep/Glob results don't count. **Always Read the file before editing it.** Don't use Grep to find lines then try to edit them in parallel — that's a guaranteed triple failure.
+
+### Emoji and special characters in commit messages
+Don't use heredoc (`cat <<'EOF'`) for commit messages containing emoji or unicode — the special characters break bash quoting. Use plain double-quoted strings instead.
+
 ## Never Leave Uncommitted Changes Behind
 
 When committing, always check `git status` afterward. If there are still uncommitted changes from previous sessions, **tell the user immediately** and suggest they be committed or discarded. Don't silently leave them — the user may not realize they exist, and they'll accumulate into a confusing mess. This applies even if the changes aren't from the current session.
