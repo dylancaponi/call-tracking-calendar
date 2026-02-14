@@ -346,6 +346,10 @@ class GoogleCalendar:
             logger.error(f"Failed to create calendar: {e}")
             raise GoogleCalendarError(f"Failed to create calendar: {e}") from e
 
+    def get_calendar_id(self) -> str:
+        """Get the current calendar ID (creates calendar if needed)."""
+        return self.get_or_create_calendar()
+
     def create_event_from_call(self, call: CallRecord) -> str:
         """Create a calendar event from a call record.
 

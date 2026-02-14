@@ -23,6 +23,7 @@ DEFAULT_SYNC_DAYS = 30
 # Setting key for tracking if initial sync was done
 SETTING_INITIAL_SYNC_DONE = "initial_sync_done"
 SETTING_SYNC_ALL_HISTORY = "sync_all_history"
+SETTING_CALENDAR_ID = "calendar_id"
 
 
 def setup_logging(verbose: bool = False) -> None:
@@ -188,6 +189,19 @@ class SyncService:
                 started_at=started_at,
                 finished_at=datetime.now(timezone.utc),
             )
+
+        # Detect if the calendar was deleted and recreated
+        try:
+            calendar_id = self.calendar.get_calendar_id()
+            stored_calendar_id = self.sync_db.get_setting(SETTING_CALENDAR_ID)
+
+            if stored_calendar_id and stored_calendar_id != calendar_id:
+                logger.info("Calendar ID changed (calendar was deleted/recreated) — clearing sync history")
+                self.sync_db.clear_all_synced_calls()
+
+            self.sync_db.set_setting(SETTING_CALENDAR_ID, calendar_id)
+        except Exception as e:
+            logger.warning(f"Failed to check calendar ID: {e}")
 
         # Determine the 'since' date
         if since is None:
