@@ -228,9 +228,11 @@ class PreferencesWindow:
             "(where you or the other person picked up).\n\n"
             "Recent calls may take time to sync from\n"
             "your iPhone via iCloud. If a call is missing,\n"
-            "try making an outgoing FaceTime call from\n"
-            "this Mac to trigger a sync."
+            "use the Trigger iCloud Sync button to nudge it."
         )
+        ttk.Button(
+            stats_header, text="Trigger iCloud Sync", command=self._trigger_icloud_sync
+        ).pack(side=tk.RIGHT)
 
         stats_frame = ttk.Frame(parent, padding="10")
         stats_frame.pack(fill=tk.X, pady=(0, 5))
@@ -479,6 +481,11 @@ class PreferencesWindow:
             self.status_label.config(text=text)
             if self.root:
                 self.root.update_idletasks()
+
+    def _trigger_icloud_sync(self) -> None:
+        """Open FaceTime to a number to trigger iCloud call history sync."""
+        import subprocess
+        subprocess.Popen(["open", "facetime://+15055034455"])
 
     def _refresh_status(self) -> None:
         """Refresh the status tab."""
