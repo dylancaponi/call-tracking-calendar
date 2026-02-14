@@ -389,17 +389,6 @@ class PreferencesWindow:
         self.settings_status_label = ttk.Label(calendar_frame, text="", foreground="gray")
         self.settings_status_label.pack(anchor=tk.W, pady=(10, 0))
 
-        # Data management
-        data_frame = ttk.LabelFrame(parent, text="Sync History", padding="10")
-        data_frame.pack(fill=tk.X, pady=5)
-
-        ttk.Label(
-            data_frame,
-            text="Clear sync history to re-sync all calls",
-        ).pack(anchor=tk.W)
-        ttk.Button(
-            data_frame, text="Clear Sync History", command=self._clear_sync_history
-        ).pack(anchor=tk.W, pady=5)
 
     def _create_logs_tab(self, parent: ttk.Frame) -> None:
         """Create the logs tab content."""
@@ -594,23 +583,6 @@ class PreferencesWindow:
                     )
                     open_contacts_settings()
 
-    def _clear_sync_history(self) -> None:
-        """Clear sync history."""
-        if messagebox.askyesno(
-            "Clear History",
-            "Are you sure you want to clear the sync history?\n"
-            "All calls will be synced again on the next sync.",
-        ):
-            try:
-                self.sync_db.initialize()
-                count = self.sync_db.clear_all_synced_calls()
-                messagebox.showinfo(
-                    "Success", f"Cleared {count} synced call records."
-                )
-                self._refresh_status()
-            except Exception as e:
-                messagebox.showerror("Error", str(e))
-
     def _save_calendar_name(self) -> None:
         """Save the calendar name setting."""
         new_name = self.calendar_name_var.get().strip()
@@ -658,14 +630,6 @@ class PreferencesWindow:
 
     def _clear_calendar(self) -> None:
         """Clear all events from the calendar with progress updates."""
-        calendar_name = self.google_calendar.get_calendar_name()
-        if not messagebox.askyesno(
-            "Clear Calendar",
-            f"Delete ALL events from '{calendar_name}'?\n\n"
-            "This cannot be undone.",
-        ):
-            return
-
         self._update_settings_status("Clearing calendar...")
 
         def do_clear():
@@ -681,15 +645,11 @@ class PreferencesWindow:
                 self.sync_db.initialize()
                 self.sync_db.clear_all_synced_calls()
 
-                self._update_settings_status(f"Done: Deleted {deleted} events")
-                messagebox.showinfo(
-                    "Success",
-                    f"Deleted {deleted} events from '{calendar_name}'.\n"
-                    "Sync history has also been cleared.",
+                self._update_settings_status(
+                    f"Deleted {deleted} events. Sync history cleared."
                 )
             except Exception as e:
                 self._update_settings_status(f"Error: {e}")
-                messagebox.showerror("Error", f"Failed to clear calendar: {e}")
 
         if self.root:
             self.root.after(100, do_clear)

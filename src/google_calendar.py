@@ -412,7 +412,7 @@ class GoogleCalendar:
             duration_str = f"{total_mins}min"
 
         # Direction indicator matching iPhone convention
-        direction_icon = "↗️" if call.is_outgoing else "↙️"
+        direction_icon = "↗" if call.is_outgoing else "↙"
 
         summary = f"{direction_icon} {display_name} [{duration_str}]"
 
