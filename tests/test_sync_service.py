@@ -435,6 +435,54 @@ class TestSyncService:
         batch_calls = mock_calendar.create_events_batch.call_args[0][0]
         assert len(batch_calls) == 2
 
+    def test_sync_skips_calls_already_on_calendar_from_another_device(
+        self,
+        service: SyncService,
+        mock_call_db: MagicMock,
+        mock_calendar: MagicMock,
+        sync_db: SyncDatabase,
+    ):
+        """Cross-device dedup: calls already on Google Calendar should be skipped."""
+        calls = [
+            CallRecord(
+                unique_id="call-1",
+                phone_number="+15551234567",
+                contact_name="John",
+                timestamp=datetime(2024, 1, 15, 10, 0, 0, tzinfo=timezone.utc),
+                duration_seconds=60,
+                is_answered=True,
+                is_outgoing=False,
+            ),
+            CallRecord(
+                unique_id="call-2",
+                phone_number="+15559876543",
+                contact_name="Jane",
+                timestamp=datetime(2024, 1, 15, 11, 0, 0, tzinfo=timezone.utc),
+                duration_seconds=120,
+                is_answered=True,
+                is_outgoing=True,
+            ),
+        ]
+        mock_call_db.get_calls.return_value = iter(calls)
+
+        # Simulate call-1 already synced by another Mac
+        mock_calendar.get_synced_call_ids.return_value = {
+            "call-1": "remote-event-1",
+        }
+        mock_calendar.create_event_from_call.return_value = "event-2"
+
+        result = service.sync()
+
+        assert result.success
+        assert result.calls_synced == 1
+        assert result.calls_skipped == 1
+        # call-1 should now be in local sync DB (backfilled)
+        assert sync_db.is_call_synced("call-1")
+        # Only call-2 should have been created
+        mock_calendar.create_event_from_call.assert_called_once()
+        synced_call = mock_calendar.create_event_from_call.call_args[0][0]
+        assert synced_call.unique_id == "call-2"
+
     def test_get_sync_status(
         self,
         service: SyncService,

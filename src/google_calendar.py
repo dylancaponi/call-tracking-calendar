@@ -630,6 +630,51 @@ class GoogleCalendar:
             logger.error(f"Failed to clear calendar: {e}")
             raise GoogleCalendarError(f"Failed to clear calendar: {e}") from e
 
+    def get_synced_call_ids(self, time_min: datetime, time_max: datetime) -> Dict[str, str]:
+        """Query existing calendar events and extract callUniqueId from extendedProperties.
+
+        Used for multi-device dedup: finds events already synced by another Mac.
+
+        Args:
+            time_min: Start of time range to query.
+            time_max: End of time range to query.
+
+        Returns:
+            Dict mapping callUniqueId → googleEventId for events that have
+            a callUniqueId in their extendedProperties.private.
+        """
+        calendar_id = self.get_or_create_calendar()
+        service = self._get_service()
+        result_map: Dict[str, str] = {}
+        page_token = None
+
+        try:
+            while True:
+                events_result = service.events().list(
+                    calendarId=calendar_id,
+                    timeMin=time_min.isoformat(),
+                    timeMax=time_max.isoformat(),
+                    maxResults=250,
+                    singleEvents=True,
+                    pageToken=page_token,
+                ).execute()
+
+                for event in events_result.get("items", []):
+                    ext = event.get("extendedProperties", {}).get("private", {})
+                    call_id = ext.get("callUniqueId")
+                    if call_id:
+                        result_map[call_id] = event["id"]
+
+                page_token = events_result.get("nextPageToken")
+                if not page_token:
+                    break
+
+        except HttpError as e:
+            logger.warning(f"Failed to query existing events for dedup: {e}")
+            # Non-fatal — fall back to local-only dedup
+
+        return result_map
+
     def get_event(self, event_id: str) -> Optional[CalendarEvent]:
         """Get a calendar event by ID.
 

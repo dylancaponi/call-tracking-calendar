@@ -259,6 +259,29 @@ class SyncService:
                 finished_at=datetime.now(timezone.utc),
             )
 
+        # Cross-device dedup: query Google Calendar for events already synced
+        # by another device, and backfill the local sync DB
+        if all_calls:
+            try:
+                timestamps = [c.timestamp for c in all_calls]
+                time_min = min(timestamps) - timedelta(minutes=1)
+                time_max = max(timestamps) + timedelta(hours=24)
+                remote_ids = self.calendar.get_synced_call_ids(time_min, time_max)
+
+                # Backfill local DB with events found on calendar but missing locally
+                remote_only = {
+                    cid: eid for cid, eid in remote_ids.items()
+                    if cid not in synced_ids
+                }
+                for call_id, event_id in remote_only.items():
+                    self.sync_db.mark_call_synced(call_id, event_id)
+                    synced_ids.add(call_id)
+
+                if remote_only:
+                    logger.info(f"Found {len(remote_only)} events synced by another device")
+            except Exception as e:
+                logger.warning(f"Cross-device dedup check failed: {e}")
+
         # Filter out already synced calls AND deduplicate within current batch
         seen = set()
         calls_to_sync = []
