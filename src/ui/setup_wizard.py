@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import threading
 import tkinter as tk
 from tkinter import messagebox, ttk
 from typing import Callable, List, Optional, Tuple
@@ -61,8 +62,15 @@ class SetupWizard:
             ("Background Sync", self._create_launchagent_step),
             ("Complete", self._create_complete_step),
         ]
-        self.google_calendar = GoogleCalendar()
+        self._google_calendar: Optional[GoogleCalendar] = None
         self.sync_db = SyncDatabase()
+
+    @property
+    def google_calendar(self) -> GoogleCalendar:
+        """Lazily create GoogleCalendar to avoid early keychain access."""
+        if self._google_calendar is None:
+            self._google_calendar = GoogleCalendar()
+        return self._google_calendar
 
     def run(self) -> None:
         """Run the setup wizard."""
@@ -286,7 +294,7 @@ Click "Next" to begin setup.
         next_btn.pack(side=tk.RIGHT)
 
     def _authenticate_google(self) -> None:
-        """Perform Google authentication."""
+        """Perform Google authentication in a background thread."""
         # First disconnect any existing credentials to force fresh login
         self.google_calendar.logout()
 
@@ -296,38 +304,85 @@ Click "Next" to begin setup.
             "A browser window will open.\n\n"
             "Please select or sign into the Google account you want to use.\n\n"
             "If prompted for Keychain access, click 'Always Allow' to avoid\n"
-            "repeated password prompts.\n\n"
-            "The app will wait for you to complete sign-in."
+            "repeated password prompts."
         )
 
-        try:
+        # Run OAuth flow in background thread so UI stays responsive
+        self._auth_result: Optional[tuple] = None  # (success, error)
+
+        def _do_auth():
+            try:
+                self.google_calendar.authenticate()
+                self._auth_result = (True, None)
+            except Exception as e:
+                self._auth_result = (False, e)
             if self.root:
-                self.root.config(cursor="wait")
-                self.root.update()
+                self.root.after(0, self._on_auth_complete)
 
-            self.google_calendar.authenticate()
+        threading.Thread(target=_do_auth, daemon=True).start()
 
-            if self.root:
-                self.root.config(cursor="")
+        # Show waiting UI with cancel button
+        self._show_auth_waiting()
 
+    def _show_auth_waiting(self) -> None:
+        """Show a waiting state on the Google step while auth is in progress."""
+        self._clear_frame()
+
+        # Recreate step indicator
+        step_frame = ttk.Frame(self.main_frame)
+        step_frame.pack(fill=tk.X, pady=(0, 20))
+        for i, (name, _) in enumerate(self.steps):
+            label_text = f"● {name}" if i == self.current_step else f"○ {name}"
+            label = ttk.Label(step_frame, text=label_text, font=("Helvetica", 10))
+            label.pack(side=tk.LEFT, padx=5)
+
+        content_frame = ttk.Frame(self.main_frame)
+        content_frame.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(
+            content_frame,
+            text="Connect Google Account",
+            font=("Helvetica", 18, "bold"),
+        ).pack(pady=(20, 10))
+
+        ttk.Label(
+            content_frame,
+            text="Waiting for Google sign-in to complete in your browser…",
+            justify=tk.CENTER,
+        ).pack(pady=30)
+
+        ttk.Button(
+            content_frame,
+            text="Cancel Sign-in",
+            command=self._cancel_auth,
+        ).pack(pady=10)
+
+    def _cancel_auth(self) -> None:
+        """Cancel the in-progress auth and return to the Google step."""
+        # The daemon thread will die on its own; just navigate away
+        self._auth_result = None
+        self._show_step(2)
+
+    def _on_auth_complete(self) -> None:
+        """Handle auth thread completion."""
+        result = self._auth_result
+        if result is None:
+            return  # Cancelled
+
+        success, error = result
+        self._auth_result = None
+
+        if success:
             messagebox.showinfo("Success", "Successfully connected to Google Calendar!")
-            self._show_step(2)  # Refresh the step
-        except FileNotFoundError as e:
-            if self.root:
-                self.root.config(cursor="")
-            messagebox.showerror("Error", str(e))
-        except AuthenticationError as e:
-            if self.root:
-                self.root.config(cursor="")
+            self._show_step(2)
+        elif isinstance(error, FileNotFoundError):
+            messagebox.showerror("Error", str(error))
+            self._show_step(2)
+        else:
             messagebox.showerror(
                 "Authentication Failed",
                 "Google sign-in was cancelled or failed. Please try again.",
             )
-            self._show_step(2)
-        except Exception as e:
-            if self.root:
-                self.root.config(cursor="")
-            messagebox.showerror("Error", f"An unexpected error occurred: {e}")
             self._show_step(2)
 
     def _disconnect_google(self) -> None:
@@ -350,7 +405,7 @@ Click "Next" to begin setup.
             status_text = "✓ Contacts access is granted"
             status_color = "green"
         elif status == 'unavailable':
-            status_text = "⚠ Contacts feature requires macOS 14.1+"
+            status_text = "⚠ Contacts database not found"
             status_color = "orange"
         elif status == 'denied':
             status_text = "✗ Contacts access was denied"
@@ -366,7 +421,7 @@ Click "Next" to begin setup.
             ttk.Label(
                 parent,
                 text=(
-                    "The Contacts feature requires macOS 14.1 or later.\n\n"
+                    "No Contacts database was found on this system.\n\n"
                     "Your calendar events will show phone numbers instead of names.\n"
                     "You can still use all other features of the app."
                 ),
@@ -472,15 +527,24 @@ Click "Next" to begin setup.
 
         ttk.Label(
             sync_frame,
-            text="Sync your calls from the last 30 days to Google Calendar now.",
+            text="Sync your calls to Google Calendar now.",
             justify=tk.CENTER,
         ).pack(pady=5)
 
+        sync_btn_frame = ttk.Frame(sync_frame)
+        sync_btn_frame.pack(pady=10)
+
         ttk.Button(
-            sync_frame,
+            sync_btn_frame,
             text="Sync Last 30 Days",
-            command=self._sync_now,
-        ).pack(pady=10)
+            command=lambda: self._sync_now(days=30),
+        ).pack(side=tk.LEFT, padx=5)
+
+        ttk.Button(
+            sync_btn_frame,
+            text="Sync Full History",
+            command=lambda: self._sync_now(days=None),
+        ).pack(side=tk.LEFT, padx=5)
 
         # Background sync section
         agent_frame = ttk.LabelFrame(parent, text="Background Sync (Optional)", padding="10")
@@ -522,13 +586,22 @@ Click "Next" to begin setup.
             side=tk.RIGHT
         )
 
-    def _sync_now(self) -> None:
-        """Perform an immediate sync."""
+    def _sync_now(self, days: Optional[int] = 30) -> None:
+        """Perform an immediate sync.
+
+        Args:
+            days: Number of days to sync, or None for full history.
+        """
+        from datetime import datetime, timedelta, timezone
+
+        label = f"last {days} days" if days else "full history"
         messagebox.showinfo(
             "Syncing...",
-            "Syncing your calls from the last 30 days.\n\n"
+            f"Syncing your calls ({label}).\n\n"
             "This may take a moment. Click OK to start."
         )
+
+        since = datetime.now(timezone.utc) - timedelta(days=days) if days else datetime(2000, 1, 1, tzinfo=timezone.utc)
 
         try:
             if self.root:
@@ -536,7 +609,7 @@ Click "Next" to begin setup.
                 self.root.update()
 
             service = SyncService()
-            result = service.sync()
+            result = service.sync(since=since)
 
             if self.root:
                 self.root.config(cursor="")

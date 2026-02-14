@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import tkinter as tk
 from tkinter import messagebox, ttk
 from typing import Callable, Optional
@@ -91,9 +92,16 @@ class PreferencesWindow:
         """
         self.on_close = on_close
         self.root: Optional[tk.Tk] = None
-        self.google_calendar = GoogleCalendar()
+        self._google_calendar: Optional[GoogleCalendar] = None
         self.sync_db = SyncDatabase()
         self.sync_service = SyncService()
+
+    @property
+    def google_calendar(self) -> GoogleCalendar:
+        """Lazily create GoogleCalendar to avoid early keychain access."""
+        if self._google_calendar is None:
+            self._google_calendar = GoogleCalendar()
+        return self._google_calendar
 
     def run(self) -> None:
         """Run the preferences window."""
@@ -112,23 +120,18 @@ class PreferencesWindow:
         self.root.geometry(f"{width}x{height}+{x}+{y}")
 
         # Create notebook for tabs
-        notebook = ttk.Notebook(self.root)
-        notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        self.notebook = ttk.Notebook(self.root)
+        self.notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-        # Status tab
-        status_frame = ttk.Frame(notebook, padding="10")
-        notebook.add(status_frame, text="Status")
-        self._create_status_tab(status_frame)
+        # Create empty tab frames (content populated after window is visible)
+        self.status_frame = ttk.Frame(self.notebook, padding="10")
+        self.notebook.add(self.status_frame, text="Status")
 
-        # Settings tab
-        settings_frame = ttk.Frame(notebook, padding="10")
-        notebook.add(settings_frame, text="Settings")
-        self._create_settings_tab(settings_frame)
+        self.settings_frame = ttk.Frame(self.notebook, padding="10")
+        self.notebook.add(self.settings_frame, text="Settings")
 
-        # Logs tab
-        logs_frame = ttk.Frame(notebook, padding="10")
-        notebook.add(logs_frame, text="Logs")
-        self._create_logs_tab(logs_frame)
+        self.logs_frame = ttk.Frame(self.notebook, padding="10")
+        self.notebook.add(self.logs_frame, text="Logs")
 
         # Handle window close
         self.root.protocol("WM_DELETE_WINDOW", self._close)
@@ -136,7 +139,16 @@ class PreferencesWindow:
         # Set macOS menu bar app name after window is shown
         self.root.after(100, lambda: self._set_macos_app_name("Call Tracking Calendar"))
 
+        # Populate tabs after window is visible so keychain dialog doesn't block render
+        self.root.after(200, self._populate_tabs)
+
         self.root.mainloop()
+
+    def _populate_tabs(self) -> None:
+        """Populate tab contents (deferred so window renders first)."""
+        self._create_status_tab(self.status_frame)
+        self._create_settings_tab(self.settings_frame)
+        self._create_logs_tab(self.logs_frame)
 
     def _create_status_tab(self, parent: ttk.Frame) -> None:
         """Create the status tab content."""
@@ -180,17 +192,25 @@ class PreferencesWindow:
                 contacts_frame, text="Enable", command=self._enable_contacts
             ).pack(side=tk.RIGHT)
 
-        # Google status
+        # Google status (checked in background thread to avoid keychain dialog blocking UI)
         google_frame = ttk.LabelFrame(parent, text="Google Calendar", padding="10")
         google_frame.pack(fill=tk.X, pady=5)
 
-        is_auth = self.google_calendar.is_authenticated
-        auth_text = "✓ Connected" if is_auth else "✗ Not Connected"
-        auth_color = "green" if is_auth else "red"
         ttk.Label(google_frame, text="Status:").pack(side=tk.LEFT)
-        ttk.Label(google_frame, text=auth_text, foreground=auth_color).pack(
-            side=tk.LEFT, padx=10
-        )
+        google_status_label = ttk.Label(google_frame, text="Checking…", foreground="gray")
+        google_status_label.pack(side=tk.LEFT, padx=10)
+
+        def _check_auth():
+            is_auth = self.google_calendar.is_authenticated
+            if self.root:
+                self.root.after(0, lambda: _update_google_status(is_auth))
+
+        def _update_google_status(is_auth):
+            auth_text = "✓ Connected" if is_auth else "✗ Not Connected"
+            auth_color = "green" if is_auth else "red"
+            google_status_label.config(text=auth_text, foreground=auth_color)
+
+        threading.Thread(target=_check_auth, daemon=True).start()
 
         # Sync stats - custom header with info icon
         stats_header = ttk.Frame(parent)
@@ -241,8 +261,14 @@ class PreferencesWindow:
         btn_frame = ttk.Frame(action_frame)
         btn_frame.pack(anchor=tk.W)
 
-        self.sync_btn = ttk.Button(btn_frame, text="Sync Now", command=self._sync_now)
-        self.sync_btn.pack(side=tk.LEFT, padx=(0, 10))
+        self.sync_30d_btn = ttk.Button(
+            btn_frame, text="Sync Last 30 Days", command=lambda: self._sync_now(days=30)
+        )
+        self.sync_30d_btn.pack(side=tk.LEFT, padx=(0, 5))
+        self.sync_full_btn = ttk.Button(
+            btn_frame, text="Sync Full History", command=lambda: self._sync_now(days=None)
+        )
+        self.sync_full_btn.pack(side=tk.LEFT, padx=(0, 10))
         ttk.Button(btn_frame, text="Refresh Stats", command=self._refresh_status).pack(
             side=tk.LEFT
         )
@@ -260,24 +286,34 @@ class PreferencesWindow:
             font=("Helvetica", 16, "bold"),
         ).pack(pady=(0, 20))
 
-        # Google account
+        # Google account (checked in background to avoid keychain blocking UI)
         google_frame = ttk.LabelFrame(parent, text="Google Account", padding="10")
         google_frame.pack(fill=tk.X, pady=5)
 
-        is_auth = self.google_calendar.is_authenticated
+        google_settings_label = ttk.Label(google_frame, text="Checking…", foreground="gray")
+        google_settings_label.pack(anchor=tk.W)
 
-        if is_auth:
-            ttk.Label(google_frame, text="Connected to Google Calendar").pack(
-                anchor=tk.W
-            )
-            ttk.Button(
-                google_frame, text="Disconnect", command=self._disconnect_google
-            ).pack(anchor=tk.W, pady=5)
-        else:
-            ttk.Label(google_frame, text="Not connected").pack(anchor=tk.W)
-            ttk.Button(
-                google_frame, text="Connect", command=self._connect_google
-            ).pack(anchor=tk.W, pady=5)
+        def _check_settings_auth():
+            is_auth = self.google_calendar.is_authenticated
+            if self.root:
+                self.root.after(0, lambda: _update_settings_auth(is_auth))
+
+        def _update_settings_auth(is_auth):
+            google_settings_label.destroy()
+            if is_auth:
+                ttk.Label(google_frame, text="Connected to Google Calendar").pack(
+                    anchor=tk.W
+                )
+                ttk.Button(
+                    google_frame, text="Disconnect", command=self._disconnect_google
+                ).pack(anchor=tk.W, pady=5)
+            else:
+                ttk.Label(google_frame, text="Not connected").pack(anchor=tk.W)
+                ttk.Button(
+                    google_frame, text="Connect", command=self._connect_google
+                ).pack(anchor=tk.W, pady=5)
+
+        threading.Thread(target=_check_settings_auth, daemon=True).start()
 
         # Background sync
         agent_frame = ttk.LabelFrame(parent, text="Background Sync", padding="10")
@@ -398,21 +434,32 @@ class PreferencesWindow:
             pady=10
         )
 
-    def _sync_now(self) -> None:
-        """Trigger an immediate sync with progress updates."""
-        # Disable button during sync
-        self.sync_btn.config(state=tk.DISABLED)
-        self._update_status("Starting sync...")
+    def _sync_now(self, days: Optional[int] = 30) -> None:
+        """Trigger an immediate sync with progress updates.
+
+        Args:
+            days: Number of days to sync, or None for full history.
+        """
+        from datetime import datetime, timedelta, timezone
+
+        # Disable buttons during sync
+        self.sync_30d_btn.config(state=tk.DISABLED)
+        self.sync_full_btn.config(state=tk.DISABLED)
+
+        label = f"last {days} days" if days else "full history"
+        self._update_status(f"Starting sync ({label})...")
+
+        since = datetime.now(timezone.utc) - timedelta(days=days) if days else datetime(2000, 1, 1, tzinfo=timezone.utc)
 
         def do_sync():
             try:
-                # Get calls to sync
                 self._update_status("Reading call history...")
                 if self.root:
                     self.root.update()
 
                 result = self.sync_service.sync(
-                    on_progress=self._on_sync_progress
+                    since=since,
+                    on_progress=self._on_sync_progress,
                 )
 
                 self._update_status(
@@ -427,7 +474,8 @@ class PreferencesWindow:
                 self._update_status(f"Error: {e}")
                 messagebox.showerror("Sync Failed", str(e))
             finally:
-                self.sync_btn.config(state=tk.NORMAL)
+                self.sync_30d_btn.config(state=tk.NORMAL)
+                self.sync_full_btn.config(state=tk.NORMAL)
 
         # Run sync (Tkinter doesn't have great threading, but this keeps UI responsive)
         if self.root:
@@ -463,13 +511,25 @@ class PreferencesWindow:
             self.log_text.see(tk.END)
 
     def _connect_google(self) -> None:
-        """Connect Google account."""
-        try:
-            self.google_calendar.authenticate()
+        """Connect Google account in a background thread."""
+        def _do_auth():
+            try:
+                self.google_calendar.authenticate()
+                if self.root:
+                    self.root.after(0, lambda: self._on_connect_complete(True, None))
+            except Exception as e:
+                if self.root:
+                    self.root.after(0, lambda: self._on_connect_complete(False, e))
+
+        threading.Thread(target=_do_auth, daemon=True).start()
+
+    def _on_connect_complete(self, success: bool, error) -> None:
+        """Handle Google auth completion."""
+        if success:
             messagebox.showinfo("Success", "Successfully connected to Google Calendar!")
             self._refresh_status()
-        except Exception as e:
-            messagebox.showerror("Error", str(e))
+        else:
+            messagebox.showerror("Error", str(error))
 
     def _disconnect_google(self) -> None:
         """Disconnect Google account."""

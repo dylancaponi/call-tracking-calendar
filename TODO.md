@@ -2,7 +2,7 @@
 
 ## Bugs
 
-- [ ] **Google auth cancellation crashes app** — Backing out of the OAuth flow (closing browser, denying access) causes an unhandled exception. Should fail gracefully and return to the Google Account step.
+- [x] **Google auth cancellation crashes app** — Fixed: show friendly error dialog and return to Google Account step.
 
 - [x] **Duplicate calls synced in a single run** — Fixed: added `GROUP BY` in SQL query + `seen` set dedup in sync_service.
 
