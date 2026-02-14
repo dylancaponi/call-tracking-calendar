@@ -123,6 +123,10 @@ Don't split git add, git commit, and git status into separate calls. Chain them:
 
 That's it. Not 6+ calls with `pwd` and retries in between.
 
+## Never Leave Uncommitted Changes Behind
+
+When committing, always check `git status` afterward. If there are still uncommitted changes from previous sessions, **tell the user immediately** and suggest they be committed or discarded. Don't silently leave them — the user may not realize they exist, and they'll accumulate into a confusing mess. This applies even if the changes aren't from the current session.
+
 ## Meta: How to Not Waste Time
 
 ### Use Perplexity FIRST, not after 5 failed attempts
