@@ -3,7 +3,6 @@
 import argparse
 import sys
 
-from .google_calendar import GoogleCalendar
 from .launchagent import is_installed as launchagent_installed
 from .permissions import check_full_disk_access
 from .sync_database import SyncDatabase
@@ -15,21 +14,16 @@ def is_setup_complete() -> bool:
     Returns:
         True if setup is complete, False otherwise.
     """
-    # Check for Full Disk Access
-    if not check_full_disk_access():
-        return False
-
-    # Check for Google authentication
-    calendar = GoogleCalendar()
-    if not calendar.is_authenticated:
-        return False
-
-    # Check for sync database (indicates setup was run)
     sync_db = SyncDatabase()
     if not sync_db.db_path.exists():
         return False
 
-    return True
+    # Check the setup_complete flag — no keychain access, no prompts
+    try:
+        sync_db.initialize()
+        return sync_db.get_setting("setup_complete") == "true"
+    except Exception:
+        return False
 
 
 def main() -> int:

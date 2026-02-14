@@ -11,7 +11,14 @@ APP_NAME="CallTrackingCalendar"
 APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
 DMG_PATH="$DIST_DIR/$APP_NAME.dmg"
 
-# Configuration - set these environment variables or modify here
+# Load .env if present
+if [ -f "$PROJECT_DIR/.env" ]; then
+    set -a
+    source "$PROJECT_DIR/.env"
+    set +a
+fi
+
+# Configuration - set these environment variables or add to .env
 APPLE_ID="${APPLE_ID:-}"
 TEAM_ID="${TEAM_ID:-}"
 APP_PASSWORD="${APP_PASSWORD:-}"  # App-specific password from appleid.apple.com
@@ -41,22 +48,30 @@ if [ ! -d "$APP_BUNDLE" ]; then
     exit 1
 fi
 
+ENTITLEMENTS="$PROJECT_DIR/entitlements.plist"
+
 echo "=== Code Signing ==="
 
 if [ -n "$DEVELOPER_ID" ]; then
     echo "Signing with: $DEVELOPER_ID"
 
-    # Sign the sync executable
-    codesign --deep --force --options runtime \
-        --sign "$DEVELOPER_ID" \
-        "$APP_BUNDLE/Contents/MacOS/sync"
+    if [ ! -f "$ENTITLEMENTS" ]; then
+        echo "Error: entitlements.plist not found at $ENTITLEMENTS"
+        exit 1
+    fi
 
-    # Sign the main app
-    codesign --deep --force --options runtime \
+    # Sign the entire app bundle recursively (--deep signs all nested binaries)
+    echo "Signing app bundle (deep)..."
+    codesign --deep --force --options runtime --timestamp \
+        --entitlements "$ENTITLEMENTS" \
         --sign "$DEVELOPER_ID" \
         "$APP_BUNDLE"
 
     echo "Code signing complete"
+
+    # Verify signature
+    echo "Verifying signature..."
+    codesign --verify --verbose "$APP_BUNDLE"
 else
     echo "Warning: DEVELOPER_ID not set, skipping code signing"
     echo "The app will not pass Gatekeeper without code signing"
@@ -70,7 +85,7 @@ echo "=== Creating DMG ==="
 
 if [ -n "$DEVELOPER_ID" ]; then
     # Sign the DMG
-    codesign --force --sign "$DEVELOPER_ID" "$DMG_PATH"
+    codesign --force --timestamp --sign "$DEVELOPER_ID" "$DMG_PATH"
 fi
 
 echo ""

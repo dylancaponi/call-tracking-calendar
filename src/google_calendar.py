@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import logging
+import subprocess
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -47,7 +49,11 @@ KEYRING_USERNAME = "google_oauth"
 DEFAULT_CALENDAR_NAME = "Call Tracking"
 
 # Default path for OAuth client credentials
-DEFAULT_CREDENTIALS_PATH = Path(__file__).parent.parent / "resources" / "credentials.json"
+if getattr(sys, "frozen", False):
+    # Running as PyInstaller bundle — resources are in _MEIPASS
+    DEFAULT_CREDENTIALS_PATH = Path(sys._MEIPASS) / "resources" / "credentials.json"
+else:
+    DEFAULT_CREDENTIALS_PATH = Path(__file__).parent.parent / "resources" / "credentials.json"
 
 # Settings keys
 SETTINGS_CALENDAR_NAME = "calendar_name"
@@ -138,7 +144,10 @@ class GoogleCalendar:
         return creds is not None and creds.valid
 
     def _load_credentials(self) -> Optional[Credentials]:
-        """Load credentials from keyring."""
+        """Load credentials from keyring (cached after first read)."""
+        if self._credentials is not None and self._credentials.valid:
+            return self._credentials
+
         try:
             creds_json = keyring.get_password(KEYRING_SERVICE, KEYRING_USERNAME)
             if creds_json is None:
@@ -152,6 +161,7 @@ class GoogleCalendar:
                 creds.refresh(Request())
                 self._save_credentials(creds)
 
+            self._credentials = creds
             return creds
         except Exception as e:
             logger.warning(f"Failed to load credentials: {e}")
@@ -169,7 +179,18 @@ class GoogleCalendar:
         # Only include client_secret if present (not needed for PKCE/Desktop apps)
         if creds.client_secret:
             creds_data["client_secret"] = creds.client_secret
-        keyring.set_password(KEYRING_SERVICE, KEYRING_USERNAME, json.dumps(creds_data))
+
+        creds_json = json.dumps(creds_data)
+        try:
+            keyring.set_password(KEYRING_SERVICE, KEYRING_USERNAME, creds_json)
+        except Exception as e:
+            # Old keychain items from previous builds may have ACLs that block
+            # this signed app. Force-delete via security CLI and retry.
+            logger.warning(f"Keychain write failed ({e}), clearing old entry and retrying")
+            self._force_delete_keychain_item()
+            keyring.set_password(KEYRING_SERVICE, KEYRING_USERNAME, creds_json)
+
+        self._credentials = creds
 
     def authenticate(self, open_browser: bool = True) -> bool:
         """Perform OAuth authentication flow.
@@ -212,12 +233,33 @@ class GoogleCalendar:
             logger.error(f"Authentication failed: {e}")
             raise AuthenticationError(f"Authentication failed: {e}") from e
 
+    def _force_delete_keychain_item(self) -> None:
+        """Delete keychain item via security CLI.
+
+        This bypasses ACL mismatches from previous builds with different
+        code signing identities.
+        """
+        try:
+            subprocess.run(
+                [
+                    "security", "delete-generic-password",
+                    "-s", KEYRING_SERVICE,
+                    "-a", KEYRING_USERNAME,
+                ],
+                capture_output=True,
+            )
+        except Exception:
+            pass
+
     def logout(self) -> None:
         """Remove stored credentials."""
         try:
             keyring.delete_password(KEYRING_SERVICE, KEYRING_USERNAME)
         except keyring.errors.PasswordDeleteError:
             pass  # Already deleted or doesn't exist
+        except Exception:
+            # ACL mismatch — try security CLI fallback
+            self._force_delete_keychain_item()
         self._credentials = None
         self._service = None
         self._calendar_id = None

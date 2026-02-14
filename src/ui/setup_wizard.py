@@ -319,11 +319,16 @@ Click "Next" to begin setup.
         except AuthenticationError as e:
             if self.root:
                 self.root.config(cursor="")
-            messagebox.showerror("Authentication Failed", str(e))
+            messagebox.showerror(
+                "Authentication Failed",
+                "Google sign-in was cancelled or failed. Please try again.",
+            )
+            self._show_step(2)
         except Exception as e:
             if self.root:
                 self.root.config(cursor="")
             messagebox.showerror("Error", f"An unexpected error occurred: {e}")
+            self._show_step(2)
 
     def _disconnect_google(self) -> None:
         """Disconnect Google account."""
@@ -610,6 +615,12 @@ Click "Next" to begin setup.
 
     def _finish(self) -> None:
         """Finish the setup wizard."""
+        # Mark setup as complete so we don't re-show the wizard
+        try:
+            self.sync_db.initialize()
+            self.sync_db.set_setting("setup_complete", "true")
+        except Exception:
+            pass
         if self.root:
             self.root.destroy()
         if self.on_complete:

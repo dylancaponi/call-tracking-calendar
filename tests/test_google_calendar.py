@@ -198,6 +198,47 @@ class TestCallRecordToEvent:
         assert duration >= 60
 
 
+class TestAuthentication:
+    """Tests for authentication error handling."""
+
+    def test_authenticate_raises_auth_error_on_flow_failure(self, tmp_path):
+        """Test that authenticate raises AuthenticationError when flow creation fails."""
+        creds_file = tmp_path / "credentials.json"
+        creds_file.write_text("{}")
+
+        with patch.object(GoogleCalendar, "_load_credentials", return_value=None):
+            calendar = GoogleCalendar()
+            calendar.credentials_path = creds_file
+
+        with patch(
+            "src.google_calendar.InstalledAppFlow.from_client_secrets_file",
+            side_effect=ValueError("Invalid client secrets"),
+        ):
+            with pytest.raises(AuthenticationError, match="Authentication failed"):
+                calendar.authenticate()
+
+    def test_authenticate_raises_auth_error_on_user_cancel(self, tmp_path):
+        """Test that authenticate raises AuthenticationError when user closes browser."""
+        creds_file = tmp_path / "credentials.json"
+        creds_file.write_text("{}")
+
+        with patch.object(GoogleCalendar, "_load_credentials", return_value=None):
+            calendar = GoogleCalendar()
+            calendar.credentials_path = creds_file
+
+        mock_flow = MagicMock()
+        mock_flow.run_local_server.side_effect = AttributeError(
+            "'NoneType' object has no attribute 'replace'"
+        )
+
+        with patch(
+            "src.google_calendar.InstalledAppFlow.from_client_secrets_file",
+            return_value=mock_flow,
+        ):
+            with pytest.raises(AuthenticationError, match="Authentication failed"):
+                calendar.authenticate()
+
+
 class TestCalendarEvent:
     """Tests for the CalendarEvent dataclass."""
 

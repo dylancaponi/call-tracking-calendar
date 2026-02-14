@@ -180,18 +180,38 @@ pytest tests/ -v
 ### Building for Distribution
 
 ```bash
-# Build the app bundle
-./scripts/build.sh
+# Build an unsigned DMG for testing (no Apple Developer account needed)
+./scripts/build_unsigned.sh
 
-# Create DMG installer
-./scripts/create_dmg.sh
-
-# Notarize (requires Apple Developer account)
+# Or build + sign + notarize (requires Apple Developer account)
 export APPLE_ID="your@email.com"
 export TEAM_ID="YOURTEAMID"
 export APP_PASSWORD="xxxx-xxxx-xxxx-xxxx"
+export DEVELOPER_ID="Developer ID Application: Your Name (TEAMID)"
 ./scripts/notarize.sh
 ```
+
+### Clean Uninstall (for testing)
+
+To fully reset between test builds so you get the fresh-install experience:
+
+```bash
+launchctl unload ~/Library/LaunchAgents/com.calltracking.calendar.plist 2>/dev/null
+rm -f ~/Library/LaunchAgents/com.calltracking.calendar.plist
+rm -rf ~/Library/Application\ Support/CallTrackingCalendar/
+rm -rf ~/Library/Logs/CallTrackingCalendar/
+security delete-generic-password -s "CallTrackingCalendar" 2>/dev/null
+tccutil reset All com.calltracking.calendar
+rm -rf /Applications/CallTrackingCalendar.app
+```
+
+What each line removes:
+- **LaunchAgent** — background sync plist + unloads it from launchd
+- **Application Support** — sync database (call-to-event ID mappings)
+- **Logs** — sync log files
+- **Keychain** — stored Google OAuth tokens
+- **TCC permissions** — Full Disk Access, Contacts grants (so you see the prompts again)
+- **The app itself**
 
 ## Permissions
 

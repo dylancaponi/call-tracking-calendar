@@ -35,6 +35,11 @@ cp -R "$APP_BUNDLE" "$DMG_TEMP/"
 # Create a symbolic link to /Applications
 ln -s /Applications "$DMG_TEMP/Applications"
 
+# Include install instructions if available
+if [ -f "$DIST_DIR/INSTALL.txt" ]; then
+    cp "$DIST_DIR/INSTALL.txt" "$DMG_TEMP/"
+fi
+
 # Create the DMG
 hdiutil create \
     -volname "$VOLUME_NAME" \
