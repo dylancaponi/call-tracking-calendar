@@ -154,7 +154,7 @@ class CallDatabase:
             # shorter durations are usually just ringing/voicemail)
             query += " AND (ZANSWERED = 1 OR (ZORIGINATED = 1 AND ZDURATION > 5))"
 
-        query += " ORDER BY ZDATE ASC"
+        query += " GROUP BY ZUNIQUE_ID ORDER BY ZDATE ASC"
 
         try:
             # Open in read-only mode

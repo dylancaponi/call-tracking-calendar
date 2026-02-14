@@ -240,8 +240,13 @@ class SyncService:
                 finished_at=datetime.now(timezone.utc),
             )
 
-        # Filter out already synced calls
-        calls_to_sync = [c for c in all_calls if c.unique_id not in synced_ids]
+        # Filter out already synced calls AND deduplicate within current batch
+        seen = set()
+        calls_to_sync = []
+        for c in all_calls:
+            if c.unique_id not in synced_ids and c.unique_id not in seen:
+                seen.add(c.unique_id)
+                calls_to_sync.append(c)
         calls_skipped = len(all_calls) - len(calls_to_sync)
         logger.info(f"Calls to sync: {len(calls_to_sync)}, skipped: {calls_skipped}")
 

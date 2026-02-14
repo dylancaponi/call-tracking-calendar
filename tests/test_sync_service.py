@@ -313,6 +313,128 @@ class TestSyncService:
         assert len(result.errors) == 1
         assert "API error" in result.errors[0]
 
+    def test_sync_deduplicates_calls_with_same_unique_id(
+        self,
+        service: SyncService,
+        mock_call_db: MagicMock,
+        mock_calendar: MagicMock,
+    ):
+        """Regression: duplicate rows with the same unique_id should produce only one event."""
+        calls = [
+            CallRecord(
+                unique_id="call-dup",
+                phone_number="+15551234567",
+                contact_name="John",
+                timestamp=datetime.now(timezone.utc),
+                duration_seconds=60,
+                is_answered=True,
+                is_outgoing=False,
+            ),
+            CallRecord(
+                unique_id="call-dup",
+                phone_number="+15551234567",
+                contact_name="John",
+                timestamp=datetime.now(timezone.utc),
+                duration_seconds=60,
+                is_answered=True,
+                is_outgoing=False,
+            ),
+        ]
+        mock_call_db.get_calls.return_value = iter(calls)
+        mock_calendar.create_event_from_call.return_value = "event-dup"
+
+        result = service.sync(use_batch=False)
+
+        assert result.success
+        assert result.calls_synced == 1
+        mock_calendar.create_event_from_call.assert_called_once()
+
+    def test_sync_deduplicates_keeps_first_occurrence(
+        self,
+        service: SyncService,
+        mock_call_db: MagicMock,
+        mock_calendar: MagicMock,
+    ):
+        """Regression: when duplicates exist, the first occurrence should be kept."""
+        calls = [
+            CallRecord(
+                unique_id="call-dup",
+                phone_number="+15551234567",
+                contact_name="John",
+                timestamp=datetime.now(timezone.utc),
+                duration_seconds=60,
+                is_answered=True,
+                is_outgoing=False,
+            ),
+            CallRecord(
+                unique_id="call-dup",
+                phone_number="+15551234567",
+                contact_name="John",
+                timestamp=datetime.now(timezone.utc),
+                duration_seconds=999,  # Different duration — should be ignored
+                is_answered=True,
+                is_outgoing=False,
+            ),
+        ]
+        mock_call_db.get_calls.return_value = iter(calls)
+        mock_calendar.create_event_from_call.return_value = "event-dup"
+
+        result = service.sync(use_batch=False)
+
+        assert result.calls_synced == 1
+        synced_call = mock_calendar.create_event_from_call.call_args[0][0]
+        assert synced_call.duration_seconds == 60  # First occurrence
+
+    def test_sync_batch_deduplicates_calls(
+        self,
+        service: SyncService,
+        mock_call_db: MagicMock,
+        mock_calendar: MagicMock,
+    ):
+        """Regression: batch path should also deduplicate within the batch."""
+        calls = [
+            CallRecord(
+                unique_id="call-a",
+                phone_number="+15551111111",
+                contact_name="Alice",
+                timestamp=datetime.now(timezone.utc),
+                duration_seconds=60,
+                is_answered=True,
+                is_outgoing=False,
+            ),
+            CallRecord(
+                unique_id="call-a",
+                phone_number="+15551111111",
+                contact_name="Alice",
+                timestamp=datetime.now(timezone.utc),
+                duration_seconds=60,
+                is_answered=True,
+                is_outgoing=False,
+            ),
+            CallRecord(
+                unique_id="call-b",
+                phone_number="+15552222222",
+                contact_name="Bob",
+                timestamp=datetime.now(timezone.utc),
+                duration_seconds=120,
+                is_answered=True,
+                is_outgoing=True,
+            ),
+        ]
+        mock_call_db.get_calls.return_value = iter(calls)
+        mock_calendar.create_events_batch.return_value = [
+            ("call-a", "event-a", None),
+            ("call-b", "event-b", None),
+        ]
+
+        result = service.sync(use_batch=True)
+
+        assert result.success
+        assert result.calls_synced == 2
+        # Batch should have received exactly 2 unique calls, not 3
+        batch_calls = mock_calendar.create_events_batch.call_args[0][0]
+        assert len(batch_calls) == 2
+
     def test_get_sync_status(
         self,
         service: SyncService,

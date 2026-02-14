@@ -286,6 +286,49 @@ class TestCallDatabase:
 
         assert count == 3
 
+    def test_get_calls_deduplicates_by_unique_id(self, tmp_path: Path):
+        """Regression: duplicate ZUNIQUE_ID rows should return only one CallRecord each."""
+        db_path = tmp_path / "DupCalls.storedata"
+        conn = sqlite3.connect(db_path)
+        conn.execute("""
+            CREATE TABLE ZCALLRECORD (
+                Z_PK INTEGER PRIMARY KEY,
+                ZUNIQUE_ID TEXT,
+                ZADDRESS TEXT,
+                ZNAME TEXT,
+                ZDATE REAL,
+                ZDURATION REAL,
+                ZANSWERED INTEGER,
+                ZORIGINATED INTEGER
+            )
+        """)
+        # Two rows with the same ZUNIQUE_ID
+        conn.execute("""
+            INSERT INTO ZCALLRECORD
+            (Z_PK, ZUNIQUE_ID, ZADDRESS, ZNAME, ZDATE, ZDURATION, ZANSWERED, ZORIGINATED)
+            VALUES (1, 'dup-id', '+15551234567', 'John', 700000000, 300, 1, 0)
+        """)
+        conn.execute("""
+            INSERT INTO ZCALLRECORD
+            (Z_PK, ZUNIQUE_ID, ZADDRESS, ZNAME, ZDATE, ZDURATION, ZANSWERED, ZORIGINATED)
+            VALUES (2, 'dup-id', '+15551234567', 'John', 700000000, 300, 1, 0)
+        """)
+        # One unique row
+        conn.execute("""
+            INSERT INTO ZCALLRECORD
+            (Z_PK, ZUNIQUE_ID, ZADDRESS, ZNAME, ZDATE, ZDURATION, ZANSWERED, ZORIGINATED)
+            VALUES (3, 'unique-id', '+15559876543', 'Jane', 700001000, 120, 1, 1)
+        """)
+        conn.commit()
+        conn.close()
+
+        db = CallDatabase(db_path)
+        calls = list(db.get_calls(answered_only=False, min_age_seconds=0))
+
+        unique_ids = [c.unique_id for c in calls]
+        assert len(unique_ids) == 2
+        assert set(unique_ids) == {"dup-id", "unique-id"}
+
     def test_file_not_found(self, tmp_path: Path):
         """Test that FileNotFoundError is raised for non-existent database."""
         db = CallDatabase(tmp_path / "nonexistent.db")
