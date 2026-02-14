@@ -1,5 +1,12 @@
 # Call Tracking Calendar - Development Notes
 
+## Repository & Environment
+
+- **This directory (`app/`) is the git repo root.** The parent (`call-tracking-calendar/`) is NOT a git repo.
+- All git commands must run from `app/` with paths relative to it (e.g. `src/sync_service.py`, not `app/src/sync_service.py`).
+- **Sandbox:** `git`, `pytest`, and `python` commands require `dangerouslyDisableSandbox: true` due to stdout restrictions.
+- Chain git operations in a single command to avoid wasted calls: `git add <files> && git commit -m "msg" && git status`
+
 ## Quick Start
 
 ```bash
@@ -28,11 +35,19 @@ python -m src.sync_service --verbose
 Location: `~/Library/Application Support/CallHistoryDB/CallHistory.storedata`
 
 Key columns in `ZCALLRECORD`:
-- `ZUNIQUE_ID` - Unique call identifier (use for deduplication)
+- `ZUNIQUE_ID` - Call identifier (NOT enforced unique — see below)
 - `ZDATE` - Apple timestamp (add 978307200 for Unix timestamp)
 - `ZDURATION` - Duration in seconds
 - `ZANSWERED` - 1 if answered, 0 if missed
 - `ZORIGINATED` - 1 if outgoing, 0 if incoming
+
+**ZUNIQUE_ID is not SQL-unique.** The `Z` prefix is just Core Data's auto-naming
+convention (all columns get `Z` + uppercase attribute name). Core Data manages
+uniqueness at the object graph layer, not with SQL constraints. Since we read
+the SQLite file directly (bypassing Core Data), duplicate rows can appear.
+Deduplication is handled in two places:
+- `call_database.py`: `GROUP BY ZUNIQUE_ID` in the SQL query (defense-in-depth)
+- `sync_service.py`: `seen` set in the filtering loop (primary guard)
 
 ## OAuth Flow
 
